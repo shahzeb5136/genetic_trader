@@ -243,8 +243,28 @@ publication. Today's value for March 2020 is not what was on the screen in April
 using it in a backtest is a genuine look-ahead leak. Market-based series (Treasury yields,
 VIX, credit spreads, the dollar index) are final on publication and safe as-is.
 
-7 of the 18 series are flagged. Treat them as indicative only until re-pulled from ALFRED with
-proper vintage dates.
+7 of the 18 series are flagged.
+
+**Measured 2026-08-27 with an ALFRED key** - the risk is real but narrower than the blanket
+warning suggested, and is dominated by *rebasing* rather than genuine restatement:
+
+| Series | period | first print | today | revision |
+|---|---|---:|---:|---:|
+| GDPC1 | 2022 Q1 | 19,731.1 | 21,932.7 | **+11.2%** |
+| INDPRO | 2020-04 | 91.3 | 84.6 | **-7.4%** |
+| PAYEMS | 2020-04 | 130,403 | 130,426 | +0.02% |
+| CPIAUCSL | 2022-06 | 295.3 | 295.0 | -0.13% |
+| UMCSENT | 2020-04 | 71.8 | 71.8 | 0.00% |
+
+**Refined guidance.** Chain-weighted *level* series (GDPC1, INDPRO) are re-indexed to a new
+base year periodically, which shifts the whole history by ~10% - a model reading levels sees
+a number that never existed at the time. Growth rates computed from those series are largely
+unaffected. Count and index series (PAYEMS, CPIAUCSL, UMCSENT) revise by well under 0.5%.
+
+So: prefer growth rates over levels for revised series, and treat GDPC1/INDPRO levels as
+unusable without vintages. A FRED API key is now present in .env and ALFRED vintages are
+verified accessible (`realtime_start`/`realtime_end` on the observations endpoint), so
+proper point-in-time macro is unblocked - it just is not built yet.
 
 ---
 
