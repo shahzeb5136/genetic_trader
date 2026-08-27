@@ -6,6 +6,9 @@ data/**
 logs/*
 !logs/.gitkeep
 
+# Saved backtest results: reproducible from a manifest, and one GA run makes thousands.
+results/
+
 # Secrets
 .env
 config/secrets.toml

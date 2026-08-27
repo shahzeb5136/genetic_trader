@@ -186,13 +186,42 @@ touches only the columns and row groups it needs. The entire project fits on a U
 
 ---
 
+---
+
+## The backtest engine sits on top of this
+
+`src/sp500lab/backtest/` turns the silver layer into a scoring harness. Its one structural
+idea is worth stating here because it constrains the data layer: **a strategy never sees
+the panel, only a slice of it that physically ends at the as-of date.**
+
+```
+   SILVER                    PANEL                       CONTEXT
+   ──────                    ─────                       ───────
+   daily_bars_adjusted  ┐                           ┌─ view.close = close[:t+1]
+   membership_intervals ├─► (date x security)  ────►├─ universe, tradable
+   corporate_actions    │   matrices, cached        ├─ positions, cash, nav
+   gold/half_spread     │   once per process        └─ features (TODO-4)
+   gold/delisting       ┘
+```
+
+`panel.adj_close[:t+1]` is a numpy view — O(1), no copy — with exactly `t+1` rows, so
+indexing tomorrow raises `IndexError` rather than returning a price. Lookahead stops being
+a rule people must remember and becomes a thing the object cannot express (ADR-017).
+
+The panel is built once and cached, which is what makes 10,000 genetic-algorithm fitness
+evaluations take 28 minutes instead of 28 hours. Full narrative: `docs/BACKTEST.md`.
+
+---
+
 ## What is deliberately absent
 
-No strategies, no features, no backtester. Those come after the data is trustworthy, and
-they belong in separate layers:
+The **feature layer** and everything downstream of it:
 
-- `gold/` — feature matrices and labels, versioned, with leakage tests
-- a backtest engine with one interface both model families implement
+- `gold/` feature matrices and labels, versioned, with leakage tests (TODO-4)
+- a walk-forward harness with purging and an embargo
 - an experiment registry recording code commit + data version + feature version per run
+- the genetic algorithms and neural networks themselves
 
-Building any of that before the data is validated means debugging two things at once.
+The engine deliberately shipped before the features so that the fitness function exists
+before anything is optimised against it. Building the search before the scoreboard means
+debugging two things at once — the same reason the data layer came before the engine.

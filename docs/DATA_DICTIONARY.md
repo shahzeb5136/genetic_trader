@@ -220,6 +220,60 @@ sentiment, recession indicator). Using those at face value in a backtest is a lo
 
 ---
 
+## Gold — backtest inputs
+
+Built by the engine, rebuildable from silver. Registered in DuckDB with a `gold_` prefix
+(`gold_half_spread`, `gold_delisting_returns`).
+
+### `gold/backtest/half_spread`
+3,706,372 rows. Proportional half-spread per (security, session), used by the cost model.
+
+| Column | Notes |
+|---|---|
+| `security_id`, `date` | PK |
+| `half_spread` | **What the cost model charges.** max(estimator, tick floor) |
+| `half_spread_cs` | Corwin-Schultz (2012), trailing 21-session mean of SIGNED estimates |
+| `half_spread_ar` | Abdi-Ranaldo (2017), an independent cross-check |
+| `tick_floor` | `2 x tick_size(date) / 2 / as_traded_price` — the physical lower bound |
+| `binding` | `estimator` or `tick_floor` — which term produced the number |
+
+⚠️ The estimator cannot resolve modern large-cap spreads (true value 1-2bp, estimator
+noise ~30bp), so `tick_floor` binds 63% of the time and that is correct, not a fallback.
+`tick_size` is $0.0625 before decimalisation (2001-04-09) and $0.01 after. See ADR-020.
+
+Median half-spread by era: 15.58bp (2000-01), 4.47bp (2002-07), 6.72bp (2008-09),
+3.35bp (2010-15), 2.48bp (2016+).
+
+---
+
+### `gold/backtest/delisting_returns`
+518 rows — one per security whose index membership closed.
+
+| Column | Notes |
+|---|---|
+| `security_id`, `ticker` | |
+| `last_bar_date` | Last price we hold for it |
+| `membership_end` | Last monthly snapshot containing it |
+| `delist_date` | Matched effective date from `sp500_changes`, else `membership_end` |
+| `reason_category` | `index_removal` \| `acquisition` \| `bankruptcy` \| `unresolved` |
+| `reason_text` | The raw free text that produced the classification |
+| `delist_return` | Terminal return applied to the last close: 0, 0, **−1.0**, 0 |
+| `source` | `sp500_changes` or `none` |
+| `assumption` | **Free text recording exactly what was assumed and why** |
+
+⚠️ These are *assumptions*, not measurements — there is no free authoritative source for
+delisting returns. 125 rows are `unresolved` and default to an index removal at the last
+price, which is the wrong answer for a bankruptcy. Mostly pre-2010 (ADR-010). Every
+backtest reports how many of its exits used one. See ADR-021.
+
+---
+
+### `gold/backtest/panel/*.npz`
+Cached numpy panel, keyed by a hash of the build parameters. Not a parquet table and not
+registered in DuckDB. Disposable — delete it and `build_panel()` rebuilds in ~11s.
+
+---
+
 ## Quality
 
 ### `data_quality`

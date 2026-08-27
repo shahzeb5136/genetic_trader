@@ -3,10 +3,14 @@
 A survivorship-bias-aware research data platform for the S&P 500, built to a **$20/month
 data budget**.
 
-**Current phase: data collection only.** There are deliberately no strategies, models, or
-backtests in this repo yet. The long-term goal is a competition between neural nets and
-classical algorithms scored on the same backtest harness — but every one of those projects
-dies on its data layer, so the data layer gets built and validated first.
+**Current phase: data layer + backtest engine.** The long-term goal is a competition
+between genetic algorithms, neural nets and classical rules, all scored on one shared
+harness. Every project of this kind dies on its data layer, so that got built and validated
+first; the engine came second, because it is the fitness function everything else will be
+measured by. Features (TODO-4) are next, then walk-forward validation, then the models.
+
+The engine reproduces buy-and-hold SPY's real total return to **0.2 basis points**. Start
+at [BACKTEST.md](docs/BACKTEST.md).
 
 ---
 
@@ -29,6 +33,8 @@ subscription is active.
 | `security_master` | 10,707 | Stable internal IDs surviving ticker changes |
 | `sp500_changes` | 407 | Index add/remove events with effective dates |
 | `xbrl_facts` | 3,346,513 | **Point-in-time** SEC fundamentals, 649 companies, 50 tags |
+| `gold_half_spread` | 3,706,372 | Estimated half-spread per (security, date) — the cost model's input |
+| `gold_delisting_returns` | 518 | What happened to each security that left the index |
 
 ### The number that matters
 
@@ -96,6 +102,29 @@ universe_asof("2008-09-30", con)          # survivorship-free constituents
 fundamentals_asof("2024-01-15", con)      # only what was filed by that date
 ```
 
+Then build the engine's inputs and run its acceptance checks:
+
+```bash
+python -m sp500lab backtest build-delisting && python -m sp500lab backtest build-spreads
+```
+
+```bash
+python -m sp500lab backtest accept
+```
+
+```bash
+python -m sp500lab backtest baselines
+```
+
+Or from Python:
+
+```python
+from sp500lab.backtest import run_backtest
+
+res = run_backtest("momentum_12_1", start="2010-01-01", costs="realistic")
+print(res.summary())
+```
+
 ---
 
 ## Design rules
@@ -123,6 +152,50 @@ Once a paid subscription lapses, a corrupted raw file is a permanent loss.
 replays from disk. Free tiers make this feel unnecessary; a metered burst-buy month makes
 it essential.
 
+**6. Leakage is structural, not a rule.** A strategy never receives the price panel — it
+receives a numpy view that physically ends at its as-of date, so indexing tomorrow raises
+`IndexError` rather than returning a price. See [ADR-017](docs/DECISIONS.md).
+
+---
+
+## The backtest engine
+
+```bash
+python -m sp500lab backtest accept
+```
+
+Six acceptance checks. The gate is buy-and-hold SPY: the engine must reproduce SPY's real
+total return, and the three ways the adjustment chain can be wrong land on three separated
+numbers — 6.43%/yr means dividends were dropped, 10.2% means they were counted twice,
+8.32% is correct. It currently matches to **0.2 basis points**.
+
+```bash
+python -m sp500lab backtest baselines
+```
+
+Every baseline, 2007-05 → 2026-08, $100k, monthly, long-only, realistic costs:
+
+| Strategy | CAGR | Vol | Sharpe | maxDD | Turnover |
+|---|---:|---:|---:|---:|---:|
+| low_vol | 8.57% | 14.70% | 0.63 | −39.89% | 197% |
+| equal_weight | 10.41% | 21.35% | 0.57 | −58.25% | 39% |
+| random_weight | 8.87% | 21.47% | 0.50 | −61.23% | 1037% |
+| momentum_12_1 | 8.85% | 23.34% | 0.48 | −55.53% | 354% |
+| **Buy-and-hold SPY** | **10.87%** | **19.69%** | **0.62** | **−55.19%** | — |
+
+**Nothing beats the index.** That is the correct null result and the bar every model has to
+clear. And under *optimistic* costs `random_weight` posts 11.17%/yr with the second-best
+Sharpe in the suite — beating 12-1 momentum — which is why all three cost settings are
+always reported.
+
+A full backtest runs in ~0.17s, so a 10,000-evaluation genetic algorithm is about 28
+minutes of fitness evaluation rather than 28 hours.
+
+All three model families implement the same interface and the engine cannot tell them
+apart — `strategies/baselines.py` (traditional rules), `strategies/evolvable.py` (genome
+encode/decode plus a bounded search space, ready for a GA) and `strategies/learned.py` (a
+model refit at every rebalance, with no training label reaching the as-of date).
+
 ---
 
 ## Documentation
@@ -134,6 +207,8 @@ it essential.
 | [SOURCES.md](docs/SOURCES.md) | Every source: cost, limits, coverage, gotchas |
 | [DECISIONS.md](docs/DECISIONS.md) | ADRs — *why* things are the way they are |
 | [RUNBOOK.md](docs/RUNBOOK.md) | Operating it, troubleshooting, the paid-data migration |
+| [BACKTEST.md](docs/BACKTEST.md) | The engine: design, writing a strategy, costs, baselines |
+| [HANDOFF.md](docs/HANDOFF.md) | Project state and the remaining TODO list |
 
 ---
 
@@ -141,9 +216,23 @@ it essential.
 
 These are measured, not guessed. Each is documented in full in `docs/`.
 
-- **Price coverage is 69.6%** of ever-members (677 / 973). The missing 296 are almost all
-  delisted names — Yahoo drops them. This is the exact gap the planned EODHD purchase
-  closes, and it is the single largest known weakness.
+- **Price coverage of the point-in-time index is 54.7% in 2007**, rising to 100% today.
+  343 index members have no usable price history at all — Yahoo drops delisted names. So a
+  2007 backtest trades a 273-name subset of a 470-name index, and that subset is *the
+  survivors*: a second survivorship bias sitting underneath the point-in-time universe this
+  repo exists to construct. Every backtest reports its coverage ([ADR-023](docs/DECISIONS.md)).
+  **This is the single largest known weakness**, and the exact gap the planned EODHD purchase
+  closes.
+- **Delisting returns are recorded assumptions, not measurements.** There is no free
+  authoritative source. 125 of 518 securities are `unresolved` and default to an index
+  removal at the last price — the wrong answer for a bankruptcy. Each carries its assumption
+  in words ([ADR-021](docs/DECISIONS.md)).
+- **Half-spreads are estimated**, because quote data costs more than this project's budget.
+  Corwin-Schultz cannot resolve modern large-cap spreads, so a tick-size floor supplies the
+  physical lower bound and binds 63% of the time ([ADR-020](docs/DECISIONS.md)).
+- **No feature layer yet.** Until `data/gold/` has versioned feature matrices, each
+  competitor computes its own inputs and the competition partly measures who wrote better
+  feature code.
 - **Membership history starts 2007-03.** Before that, Wikipedia listed constituents as
   bulleted company names with no ticker column at all, so ticker-level membership is
   unrecoverable from this source.
@@ -162,11 +251,13 @@ These are measured, not guessed. Each is documented in full in `docs/`.
 
 ## Next steps
 
-Data layer only, in order:
+In order. Full specifications in [HANDOFF.md](docs/HANDOFF.md) §5b.
 
-1. Backfill the 33% price gap with a paid EOD feed (~$17/mo annual billing).
-2. Re-run the identical pipeline and **measure the survivorship-bias delta yourself** —
-   that number is worth more than any article about it.
-3. Build the feature layer with leakage tests.
-
-Only then: the backtest engine, and the competition.
+1. **Feature layer** in `data/gold/`, versioned, with a byte-identical leakage test. The
+   engine already has the slot for it; without it the competition measures feature-writing
+   rather than signal.
+2. **Walk-forward harness** — purging, embargo, a touch-once holdout.
+3. **Backfill the price gap** with a paid EOD feed (~$17/mo annual billing), then re-run the
+   identical pipeline and **measure the survivorship-bias delta yourself**. Expect the
+   baselines to get *worse*: that is the bias being removed.
+4. **Then** the genetic algorithms and the neural nets.

@@ -182,8 +182,8 @@ def cmd_query(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="sp500lab",
-        description="Survivorship-bias-aware S&P 500 research data platform "
-                    "(data layer only - no strategies yet).",
+        description="Survivorship-bias-aware S&P 500 research platform: "
+                    "data layer + backtest engine.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 typical first run:
@@ -192,6 +192,12 @@ typical first run:
   python -m sp500lab normalize
   python -m sp500lab quality
   python -m sp500lab status
+
+then, to backtest:
+  python -m sp500lab backtest build-delisting   # exit assumptions -> gold/
+  python -m sp500lab backtest build-spreads     # cost inputs      -> gold/
+  python -m sp500lab backtest accept            # MUST pass before trusting anything
+  python -m sp500lab backtest baselines
 """)
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = p.add_subparsers(dest="command", required=True)
@@ -223,6 +229,9 @@ typical first run:
                    ).set_defaults(func=cmd_verify)
     sub.add_parser("status", help="what exists, how big, quality summary"
                    ).set_defaults(func=cmd_status)
+
+    from .backtest.cli import add_parser as add_backtest_parser
+    add_backtest_parser(sub)
 
     s = sub.add_parser("query", help="run SQL against the parquet lake")
     s.add_argument("sql", nargs="?", help="SQL to execute")

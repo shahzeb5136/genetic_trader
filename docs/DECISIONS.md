@@ -416,3 +416,288 @@ reason a credible backtest is possible on this budget at all.
 strategy can still be holding a name when it is acquired or goes bankrupt mid-month, and
 the position must resolve to a real outcome rather than silently vanishing. See HANDOFF
 section 4.
+
+---
+
+## ADR-017 — Leakage is prevented structurally, not by convention
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** A strategy never receives the price panel. It receives a `PanelView` whose
+numpy arrays are slices ending at the as-of session, and `Context` keeps no reference to
+the parent panel.
+
+**Why.** The alternative — hand over the full panel and document that strategies must
+filter by date — makes correctness depend on every future author remembering a rule. That
+is not a mechanism, and a genetic algorithm searching thousands of variants is precisely
+the situation where one forgotten filter becomes a spectacular result nobody questions.
+
+`panel.adj_close[:t+1]` is a view: O(1), no copy, and the array has exactly `t+1` rows.
+Indexing row `t+1` raises `IndexError` because the memory is not in the object. The future
+is not filtered out; it was never present.
+
+**Three escape routes, all closed and tested:** indexing past the end raises `IndexError`;
+`ctx.price_on()` on a future date raises `LookaheadError`; reaching for `ctx.view.panel`
+raises `AttributeError`. Acceptance check 3 runs a deliberately cheating strategy for each.
+
+**Cost.** `ctx.prices` (a pandas DataFrame) is offered for readability and is ~1000x
+slower. It is documented as unusable inside a fitness function.
+
+**Consequence.** Leakage becomes a class of bug that cannot be written, rather than one
+that must be caught in review.
+
+---
+
+## ADR-018 — Buy-and-hold SPY is the engine's calibration instrument
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** Before any strategy exists, the engine must reproduce SPY's actual total
+return. Measured: **8.32%/yr over 2000-01-03..2026-08-26, matched to 0.2 basis points.**
+
+**Why this specific test.** It is unusually diagnostic because the three ways the
+adjustment chain can be wrong land on three separated numbers:
+
+| Result | Diagnosis |
+|---|---|
+| ~6.43%/yr | dividends dropped — this is the price return |
+| ~8.32%/yr | correct |
+| ~10.2%/yr | dividends counted twice |
+
+You cannot land on 8.32% by accident. A suite of unit tests on the accounting could all
+pass while the adjustment chain was inverted; this cannot.
+
+**Implementation note.** The `benchmarks` table stores raw OHLCV plus discrete dividend
+and split events but no adjustment factors, because `normalize/adjustments.py` runs over
+`daily_bars`. `backtest/benchmark.py` computes them with the *same* `compute_factors`
+function rather than a second implementation, so the two cannot drift apart.
+
+**Also load-bearing:** benchmarks are total-return adjusted. Comparing a total-return
+strategy against a price-return benchmark hands every strategy 1.9pp/yr of free apparent
+alpha.
+
+---
+
+## ADR-019 — Constant adjusted shares; no separate dividend accrual
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** The engine holds a constant number of *adjusted* shares between rebalances
+and never credits cash dividends.
+
+**Why.** `adj_close` already reinvests dividends via `adj_factor` (ADR-006), so constant
+adjusted shares reproduces the dividend-reinvested total return by construction. Adding
+cash dividends on top double-counts them — worth ~1.9pp/yr on SPY, enough to make a bad
+strategy look good.
+
+**The trap this creates, and how it is handled.** "Shares" in the engine are therefore
+notional, not the count on a brokerage statement. A per-share commission needs real share
+counts, and our stored close is split-adjusted (ADR-007), so it is not the price that
+traded. Real counts are recovered at execution through the cumulative split ratio:
+
+    as_traded_price(t) = raw_close(t) x product of split ratios with ex-date > t
+
+`adj_factor_price` cannot do this job — under the `split_adjusted` convention it is 1.0
+everywhere by construction. `normalize/splits.py` holds the shared implementation, which
+TODO-5 (point-in-time market cap) also needs.
+
+**Guard.** Acceptance check 5 compares the engine's total return against the same
+portfolio valued on a price-only series and requires a gap of one dividend stream
+(measured: 2.26%/yr). A future "fix" that credits dividends would roughly double it.
+
+---
+
+## ADR-020 — Half-spread = max(Corwin-Schultz, tick floor)
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** The proportional half-spread is the greater of a Corwin-Schultz (2012)
+estimate and a floor derived from the minimum tick.
+
+**Why not the estimator alone.** Corwin-Schultz was built for a market with 50-100bp
+spreads; its sample is 1927-2006. For an S&P 500 mega cap in 2018 the true spread is
+1-2bp, more than an order of magnitude below the estimator's resolution, so it correctly
+returns ~zero. Zero is closer to right than the alternative but still wrong: a spread
+cannot be narrower than one tick.
+
+**The averaging convention is not a detail.** Roughly half the two-day estimates come out
+negative for a liquid name. The common convention truncates each to zero and then
+averages, which computes E[max(X,0)] — a pure positive bias when the true spread is near
+zero. **Measured: that convention reports 36bp for AAPL in 2018-19 against a real quoted
+spread of about 1bp.** This project averages the signed estimates and truncates the
+average.
+
+**The floor.**
+
+    half_spread >= MIN_SPREAD_TICKS x tick_size(date) / 2 / as_traded_price
+
+`tick_size` is $0.01 after decimalisation (2001-04-09) and $0.0625 before it, making the
+pre-2001 cost regime genuinely different rather than assumed away. `MIN_SPREAD_TICKS =
+2.0` is the single modelling assumption, stated in the module rather than buried.
+
+**Verification.** AAPL 2024 0.52bp, MSFT 2024 0.24bp, KO 2024 1.68bp; 2008-09 wider than
+2010-15; pre-decimalisation wider still. The floor binds 63% of the time overall, and the
+estimator takes over where it can resolve — 2008-09 and the illiquid tail.
+
+**Rejected alternative:** a flat basis-point assumption. It cannot express the 2008-09
+widening or the decimalisation regime change, both of which are large and both of which
+this reproduces.
+
+**Bias direction, deliberately.** Where the two disagree the result errs high.
+Overstating costs makes strategies look worse, which is the safe error for a research
+platform.
+
+---
+
+## ADR-021 — Delisting outcomes are recorded assumptions, not measurements
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** Build `gold/backtest/delisting_returns` by parsing the free-text `reason` in
+`sp500_changes` into three categories, and record the assumption for every row in words.
+
+| Category | Return | Rationale |
+|---|---|---|
+| `index_removal` | 0 | Still listed; sold at the next open |
+| `acquisition` | 0 | Deal terms unknown; approximated at the last traded price |
+| `bankruptcy` | -1.0 | Equity wiped out |
+
+**Why it must exist.** Without it, a holding whose price series ends silently vanishes
+from the accounting and the outcome is never booked. That is survivorship bias running
+backwards — deleting the losses rather than the losers — and it is worse than the usual
+kind because nothing errors and no row is missing.
+
+**Why now rather than with the paid feed.** Only 4 cases are visible today because Yahoo
+carries almost no delisted names. With full coverage there would be hundreds. Buying the
+feed *exposes* this problem rather than solving it.
+
+**Price beats prose.** Two rows classified as bankruptcy still had prices 90+ days later
+and were reclassified as removals. PG&E's 2019 Chapter 11 is the instructive case: it
+filed, and its equity was not wiped out. The price series is stronger evidence than the
+wording.
+
+**What this is not.** It is not a delisting-return dataset. CRSP has one and it costs
+orders of magnitude more than this project's budget. 125 of 518 securities are
+`unresolved` and default to an index removal — the conservative choice for the common case
+and the wrong one for a bankruptcy — so the count is reported per run. Coverage of
+`sp500_changes` is poor before 2010 (ADR-010), which is where most of them are.
+
+The goal is an explicit assumption a reader can disagree with, not a silent one.
+
+---
+
+## ADR-022 — A 45-day exit buffer on the membership clip
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** `prices_clipped_to_membership()` gains an `exit_days` parameter, default 0,
+which the backtest panel sets to 45.
+
+**Why a forward extension at all** — forward data being exactly what the clip exists to
+exclude. A name dropped from the index in month M is still in `universe_asof(M-end)`, so a
+monthly strategy only sells it at the M+1 rebalance, up to ~35 calendar days later. With
+no buffer that bar does not exist and a live company is booked as a delisting.
+
+**Why 45 specifically — measured, not chosen.** Of 207 closed membership intervals that
+have prices, **203 keep trading past 45 days and exactly 4 stop.** Those 4 are the genuine
+delistings Yahoo carries. So 45 days separates "removed from the index, still listed" from
+"actually delisted" cleanly.
+
+**Why it is safe against ticker recycling.** A reassigned symbol requires the old company
+to delist and a new one to adopt it, which takes far longer than 45 days.
+`quality/checks.py::check_ticker_recycling` uses a 365-day window; the buffer is an order
+of magnitude below it. 187 of the 207 names have prices continuing past a year — that
+population is what the clip is for, and the buffer does not touch it.
+
+**Scope.** The buffer buys the sell fill and nothing else. Contexts still end at the as-of
+date (ADR-017), so no strategy can see into it.
+
+---
+
+## ADR-023 — Price coverage is reported on every run
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** Every backtest reports the fraction of the true point-in-time index that
+actually had prices, measured against `sp500_membership_intervals` — not against the
+panel's own columns.
+
+**Why.** The point-in-time universe is essentially complete; the prices are not. Yahoo
+does not carry most companies that later delisted, so a 2007 backtest trades a 273-name
+subset of a 470-name index — **54.7% coverage**, rising to 100% today. 343 index members
+have no usable price history at all.
+
+That subset is not random. It is the survivors. So the coverage gap is a *second*
+survivorship bias sitting underneath the point-in-time universe this project was built to
+construct. The membership data is honest about who was in the index; the price data is not
+honest about who could be bought.
+
+**The denominator is the decision.** An earlier implementation counted panel columns
+flagged as index members, which reported ~96% coverage in 2008 because securities with no
+prices are not columns at all. It measured "of the names we have prices for, how many have
+prices". Counting against the membership table makes the missing third visible.
+
+**Consequence.** `--min-coverage` refuses to run below a threshold. It defaults to 0 —
+reporting rather than refusing — because a 2007 start is often still the right choice; it
+just must be a decision rather than a surprise. Closing the gap is TODO-8.
+
+---
+
+## ADR-024 — Ranking ties break on a stable hash, never on security_id
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** When two securities have equal scores, `portfolio._top_k` orders them by a
+blake2b hash of the `security_id`, not by the id itself.
+
+**The bug this fixes, found by accident.** The first version broke ties lexicographically
+by `security_id`. That is deterministic — which is what acceptance check 4 tests — and it
+is also badly biased.
+
+`security_id` is assigned by the registry in the order securities are first observed
+(ADR-005), and that order correlates strongly with survival. Measured on the current
+panel:
+
+| Half of the security_id range | Still priced at the panel end |
+|---|---:|
+| Low | **99.0%** |
+| High | **61.1%** |
+
+So sorting ties by id hands every tie to a survivor.
+
+**How it surfaced.** `EvolvedBlend` was first given a default genome of every gene's
+midpoint. The midpoint of a signal weight bounded on [−1, 1] is **zero**, so all four
+weights were zero, every score was identical, and the entire portfolio was chosen by the
+tie-break. That strategy — which by construction has no opinion about anything — posted
+**17.65%/yr at a Sharpe of 0.89**, beating every honest baseline and beating buy-and-hold
+SPY.
+
+It looked like a discovery. It was the tie-break selecting survivors.
+
+**Why this is the archetypal failure for this project.** Nothing errored. The universe was
+correctly point-in-time. The prices were correctly adjusted. Execution was at the next
+open. Every acceptance check passed, including determinism — the run *was* perfectly
+reproducible, it was just reproducibly wrong. Survivorship bias had been designed out of
+the universe and walked back in through a sort key.
+
+It is also the exact failure mode a genetic algorithm is built to find. A GA searching
+over signal weights would drive them toward zero, discover that "no signal" scores
+brilliantly, and converge on it.
+
+**The fix.** `stable_tiebreak()` hashes each `security_id` with blake2b and orders on the
+result. Deterministic across runs, machines and Python versions — the builtin `hash()`
+is salted per process and would break reproducibility. Uncorrelated with listing order:
+after the change the two halves survive at 81.2% and 79.0%.
+
+Computed once per panel and carried through `Context.tiebreak`, so it costs nothing per
+rebalance.
+
+**Guarded by** three tests in `tests/test_backtest.py`: the hash is reproducible, its
+ordering is uncorrelated with id order, and an all-tied score does not select the bottom
+of the id range.
+
+**The general lesson, which is bigger than the fix.** *Deterministic* is not the same as
+*unbiased*, and a tie-break is a modelling choice. Anywhere this codebase imposes an
+arbitrary order — a sort key, a `keep="first"`, a dictionary iteration that reaches data
+— ask what that order correlates with. Here it correlated with survival, which is the one
+thing the whole repository exists to keep out of the numbers.

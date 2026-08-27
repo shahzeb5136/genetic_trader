@@ -141,6 +141,7 @@ def fundamentals_asof(
 def prices_clipped_to_membership(
     con: duckdb.DuckDBPyConnection | None = None,
     warmup_days: int = 400,
+    exit_days: int = 0,
 ) -> pd.DataFrame:
     """Adjusted bars restricted to each security's index-membership window.
 
@@ -150,8 +151,16 @@ def prices_clipped_to_membership(
     to the membership interval discards the impostor's bars.
 
     `warmup_days` extends the window backwards so indicators have history before the
-    first date a name is actually tradable. It does NOT extend forward - data after
-    membership ends is exactly what we are trying to exclude.
+    first date a name is actually tradable.
+
+    `exit_days` extends it forwards, and defaults to 0 because forward data is exactly
+    what we are normally trying to exclude. The backtest engine sets a small value
+    (see backtest.panel) for one specific reason: membership ends on a month-end, the
+    engine sells at the NEXT session's open, and with a zero buffer that bar does not
+    exist - the position would have to be liquidated at a stale price. The buffer buys
+    the sell fill, nothing else. It must stay far smaller than the ~1 year gap that
+    quality/checks.py::check_ticker_recycling uses to detect a reassigned symbol, or it
+    starts letting the impostor's bars back in.
     """
     con = con or connect()
     return con.execute("""
@@ -160,5 +169,6 @@ def prices_clipped_to_membership(
         JOIN sp500_membership_intervals m
           ON b.security_id = m.security_id
          AND b.date >= CAST(CAST(m.start_date AS DATE) - INTERVAL (?) DAY AS VARCHAR)
-         AND (m.end_is_open OR b.date <= m.end_date)
-    """, [warmup_days]).df()
+         AND (m.end_is_open
+              OR b.date <= CAST(CAST(m.end_date AS DATE) + INTERVAL (?) DAY AS VARCHAR))
+    """, [warmup_days, exit_days]).df()

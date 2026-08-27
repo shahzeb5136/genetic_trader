@@ -1,6 +1,7 @@
 # Runbook
 
-Operating the data layer: routine tasks, troubleshooting, and the paid-data migration.
+Operating the data layer and the backtest engine: routine tasks, troubleshooting,
+and the paid-data migration.
 
 ---
 
@@ -120,6 +121,124 @@ export SP500LAB_DATA_DIR=/Volumes/ssd/sp500lab-data
 
 Then run `python -m sp500lab verify` to confirm nothing was corrupted in transit. Manifest
 paths are stored relative to the data root precisely so this works.
+
+---
+
+## Backtesting
+
+Full narrative in `docs/BACKTEST.md`. This section is the operational side.
+
+### First-time setup, in order
+
+The engine reads two gold tables, so build them before the first run:
+
+```bash
+python -m sp500lab backtest build-delisting
+```
+
+```bash
+python -m sp500lab backtest build-spreads
+```
+
+Then the gate. **Do not trust any backtest number until this passes:**
+
+```bash
+python -m sp500lab backtest accept
+```
+
+Six checks, ~15 seconds. The headline is check 1: buy-and-hold SPY through the engine must
+reproduce SPY's real total return (8.32%/yr) to a few basis points. It currently matches to
+0.2bp.
+
+### Daily use
+
+```bash
+python -m sp500lab backtest baselines
+```
+
+```bash
+python -m sp500lab backtest run momentum_12_1 --all-costs --annual
+```
+
+```bash
+python -m sp500lab backtest run low_vol --top-k 30 --max-weight 0.06 --save results/lowvol30
+```
+
+```bash
+python -m sp500lab backtest coverage --annual
+```
+
+`--all-costs` reports optimistic / realistic / pessimistic side by side and warns if the
+strategy is only profitable under the optimistic setting. Use it for anything you intend
+to quote.
+
+### Rebuild order after changing upstream data
+
+The panel caches aggressively, so this order matters:
+
+```bash
+python -m sp500lab normalize
+```
+
+```bash
+python -m sp500lab backtest build-spreads
+```
+
+```bash
+python -m sp500lab backtest build-delisting
+```
+
+```bash
+python -m sp500lab backtest build-panel
+```
+
+```bash
+python -m sp500lab backtest accept
+```
+
+`build-panel` rebuilds and re-caches (~11s). The cache key is a hash of the build
+parameters, **not** of the underlying data, so silver changes do **not** invalidate it
+automatically — you must rebuild explicitly. That is the one manual step in an otherwise
+idempotent pipeline, and forgetting it means backtesting yesterday's data.
+
+### Reading the diagnostics
+
+Every result ends with a DIAGNOSTICS block. Lines prefixed `!!` are the ones that change
+what a number means:
+
+| Line | What it means |
+|---|---|
+| `price_coverage` | Priced share of the true index. **Always read this** for pre-2015 runs |
+| `forced_exits` | Positions resolved outside a rebalance, by category |
+| `!! unresolved_exits` | Exits with no recorded reason — treated as an index removal |
+| `!! spread_fallback_orders` | The spread estimator had no value; a flat default was used |
+| `!! half_spread` | The gold table is missing entirely — run `build-spreads` |
+| `!! ruined` | NAV reached zero; every later rebalance is a no-op |
+| `unfilled_orders` | No opening bar, so the order did not fill (correct, not an error) |
+
+### Troubleshooting
+
+**`no such table: gold_half_spread`** — run `backtest build-spreads`. The engine will still
+run without it and charge a flat fallback spread, but it says so loudly in the diagnostics.
+
+**`strategy allocated to N name(s) not tradable`** — the strategy put weight on a security
+that was not in the index that month or had no price. This is the survivorship-bias guard
+working. Filter on `ctx.tradable`.
+
+**`negative weight ... under a long-only mandate`** — the engine never normalises this away
+(ADR-016). Fix the strategy.
+
+**`only N usable rebalance date(s)`** — the window is too short, or the strategy's `warmup`
+consumes it. `momentum_12_1` needs 273 sessions before its first trade.
+
+**Backtest suddenly slow** — something is allocating per rebalance, almost always
+`ctx.prices` (a DataFrame, ~1000x slower than the array accessors) inside a hot loop.
+`tests/test_backtest.py::test_backtest_is_fast_enough_for_a_genetic_algorithm` asserts under
+1s per run.
+
+**Results changed with no code change** — check whether the panel cache is stale (see
+rebuild order above), then whether the strategy uses `np.random` instead of `ctx.rng`.
+Acceptance check 4 catches the second case.
 
 ---
 
