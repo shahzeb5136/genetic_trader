@@ -359,3 +359,40 @@ an external vendor's 111,032-symbol universe and matched nothing.
 meaningless. Only comparison against an independent source can. This is a concrete
 argument for holding two overlapping sources even when one is authoritative — the
 second one's job is to disagree.
+
+---
+
+## ADR-016 - Strategy mandate: long-only, monthly, sub-$100k
+
+**Status:** accepted (owner decision, 2026-08-27)
+
+**Decision.** The backtest engine targets a long-only mandate, rebalanced monthly, at a
+capital scale below $100k.
+
+**Why each choice matters more than it looks:**
+
+**Long-only.** Removes borrow cost, locate risk, and the need to ingest FINRA
+short-interest data. Portfolio construction reduces to non-negative weights summing to
+one. Most published equity factor research is replicable in this form.
+
+**Monthly rebalance.** This is the load-bearing one. Our membership reconstruction dates
+an index add/remove to within a *month* (ADR-001), which was the single largest accuracy
+limit of the free constituent history. A strategy that only acts at month boundaries
+cannot be harmed by sub-month dating error, so **the limitation stops mattering**.
+Monthly also yields ~230 rebalance dates over 2007-2026 - enough observations for
+walk-forward validation with purging.
+
+**Sub-$100k.** Market impact on S&P 500 large caps is negligible at this size, so the
+cost model reduces to commission plus half-spread and needs no ADV-scaled impact term or
+capacity constraint. This matters because we have no quote data and cannot afford any:
+the half-spread must be *estimated* from volatility and dollar volume. At institutional
+size that estimate would be the dominant source of error; at retail size it is a rounding
+detail.
+
+**Consequence.** The cost model becomes tractable without quote data - which is the only
+reason a credible backtest is possible on this budget at all.
+
+**Still required despite the simplification:** delisting returns. A long-only monthly
+strategy can still be holding a name when it is acquired or goes bankrupt mid-month, and
+the position must resolve to a real outcome rather than silently vanishing. See HANDOFF
+section 4.

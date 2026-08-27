@@ -127,6 +127,17 @@ first." Budget ~3 weeks before the first genetic algorithm runs.
 
 ---
 
+## 4b. Mandate (decided 2026-08-27)
+
+Long-only, monthly rebalance, sub-$100k capital. See ADR-016. This fixes the engine's
+shape: non-negative weights summing to one, ~230 rebalance dates, and a cost model of
+commission + estimated half-spread with no impact term. Critically, monthly rebalancing
+means the monthly granularity of our membership reconstruction is no longer an accuracy
+limit - a strategy that only acts at month boundaries cannot be harmed by sub-month
+dating error.
+
+---
+
 ## 5. Build order
 
 Do not reorder 1 and 2. The engine is the GA's fitness function; features are its
