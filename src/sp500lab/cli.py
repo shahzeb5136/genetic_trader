@@ -198,6 +198,12 @@ then, to backtest:
   python -m sp500lab backtest build-spreads     # cost inputs      -> gold/
   python -m sp500lab backtest accept            # MUST pass before trusting anything
   python -m sp500lab backtest baselines
+
+research discipline (docs/EXPERIMENTS.md):
+  every run is logged as a trial, and backtests stop before the reserved holdout
+  python -m sp500lab experiments studies        # what you have tried
+  python -m sp500lab experiments deflate NAME   # does the winner survive the search?
+  python -m sp500lab experiments holdout        # every look at the reserved period
 """)
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = p.add_subparsers(dest="command", required=True)
@@ -230,8 +236,9 @@ then, to backtest:
     sub.add_parser("status", help="what exists, how big, quality summary"
                    ).set_defaults(func=cmd_status)
 
-    from .backtest.cli import add_parser as add_backtest_parser
+    from .backtest.cli import add_experiments_parser, add_parser as add_backtest_parser
     add_backtest_parser(sub)
+    add_experiments_parser(sub)
 
     s = sub.add_parser("query", help="run SQL against the parquet lake")
     s.add_argument("sql", nargs="?", help="SQL to execute")

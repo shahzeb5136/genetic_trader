@@ -11,8 +11,13 @@ Reading order if you are new to this
     costs.py       what a trade costs under the ADR-016 mandate
     portfolio.py   score -> weights, shared by every competitor
     accept.py      the four checks that decide if any of this means anything
+    registry.py    the trial log and the holdout guard - read before searching
 
-Full narrative: docs/BACKTEST.md. Design decisions: docs/DECISIONS.md ADR-017..ADR-022.
+Full narrative: docs/BACKTEST.md, and docs/EXPERIMENTS.md for the research discipline.
+Design decisions: docs/DECISIONS.md ADR-017..ADR-026.
+
+Two defaults worth knowing before your first run: every backtest is logged as a trial,
+and every backtest stops before the 2022-01-01 holdout.
 
 Before trusting a single number, run:
 
@@ -27,6 +32,7 @@ from .costs import (FREE, OPTIMISTIC, PESSIMISTIC, REALISTIC, CostBreakdown, Cos
 from .engine import EngineError, run_all_cost_settings, run_backtest
 from .metrics import Performance, deflate_result, deflated_sharpe, probabilistic_sharpe
 from .panel import Panel, build_panel
+from .registry import HOLDOUT_START, deflate, deflate_best, study
 from .portfolio import Construction, build_weights, validate_weights
 from .results import BacktestResult, compare, format_compare
 from .strategy import (BaseStrategy, FunctionStrategy, SignalStrategy, Strategy,
@@ -35,6 +41,7 @@ from .strategy import (BaseStrategy, FunctionStrategy, SignalStrategy, Strategy,
 __all__ = [
     "Context", "LookaheadError", "PanelView",
     "Panel", "build_panel",
+    "HOLDOUT_START", "study", "deflate", "deflate_best",
     "Strategy", "BaseStrategy", "SignalStrategy", "FunctionStrategy",
     "register", "get_strategy", "list_strategies",
     "Construction", "build_weights", "validate_weights",

@@ -1,7 +1,7 @@
 # Runbook
 
-Operating the data layer and the backtest engine: routine tasks, troubleshooting,
-and the paid-data migration.
+Operating the data layer, the backtest engine and the experiment registry: routine
+tasks, troubleshooting, and the paid-data migration.
 
 ---
 
@@ -242,11 +242,98 @@ Acceptance check 4 catches the second case.
 
 ---
 
+## Experiments: the trial log and the holdout
+
+Full narrative in `docs/EXPERIMENTS.md`. This is the operational side.
+
+### What happens without you doing anything
+
+- **Every backtest is logged** to `data/experiments/runs.jsonl`
+- **Every backtest stops on 2021-12-31.** 2022-01-01 onward is the holdout (ADR-025)
+
+### Daily use
+
+```bash
+python -m sp500lab backtest run my_algo --study my-idea --notes "value tilt, 30 names"
+```
+
+```bash
+python -m sp500lab experiments studies
+```
+
+```bash
+python -m sp500lab experiments list --study my-idea --sort sharpe
+```
+
+```bash
+python -m sp500lab experiments deflate my-idea
+```
+
+That last one is the one that matters. It answers "would the luckiest of N worthless
+strategies have scored this well anyway?" Below ~0.95, the answer is yes.
+
+### Reaching into the holdout
+
+```bash
+python -m sp500lab backtest run winner --holdout only --study final-test
+```
+
+`--holdout include` runs the full history; `--holdout only` runs the reserved period
+alone. **Both are recorded permanently** and print a warning at the time. Check the ledger
+before trusting a final number:
+
+```bash
+python -m sp500lab experiments holdout
+```
+
+### Turning trial logging off
+
+```bash
+SP500LAB_REGISTRY=off python -m sp500lab backtest run scratch_idea
+```
+
+Use it for genuinely throwaway runs. Note the asymmetry: this silences the *trial* log
+only. A run that touches the holdout is still recorded, always.
+
+### Troubleshooting
+
+**"No runs logged yet"** — either nothing has been run, or `SP500LAB_REGISTRY` is set to
+off in your shell. Check with `echo $SP500LAB_REGISTRY`.
+
+**Trial count looks too low** — you probably split one search across several `--study`
+names. That understates `n_trials` and makes the deflated Sharpe too generous. The study
+should match the search you actually ran.
+
+**Trial count looks too high** — check `experiments studies`: `runs` counts log lines,
+`trials` counts distinct configurations. Only `trials` feeds the deflation.
+
+**A number does not match an older note** — the default window changed when the holdout
+landed. Runs now end 2021-12-31 (~176 rebalances) rather than at the data's end (~232).
+Compare `start`/`end` in `experiments show <run_id>` before comparing figures.
+
+**`git_dirty: true` on a run you care about** — it was produced from a working tree with
+uncommitted changes and cannot be reproduced exactly. Commit, then re-run.
+
+**Registry file ends mid-line** — a write was interrupted. Nothing to do: the next append
+starts a new line and `load()` skips the broken one. Only that single record is lost.
+
+### Backing it up
+
+`data/experiments/` belongs in the backup set **with** `vault/` and `bronze/`. You cannot
+re-derive what you tried: a discarded idea leaves no trace in git, in the results
+directory, or anywhere else. Losing the log does not lose a result, it loses the ability
+to know whether any result was real.
+
+---
+
 ## Backups
 
 Priority order — these are **not** equally valuable:
 
 1. **`data/vault/`** — paid-window downloads. Irreplaceable once a subscription lapses.
+1. **`data/experiments/`** — the trial log and the holdout ledger. Equally
+   irreplaceable, for a different reason: a discarded idea leaves no trace anywhere else,
+   and without the trial count no searched result can be deflated (ADR-026). Tiny.
    Back up to two places.
 2. **`data/bronze/`** — raw artifacts. Free-tier data is re-fetchable in principle, but
    Wikipedia revisions and old filings are slow to re-pull. Worth backing up.

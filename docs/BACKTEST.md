@@ -24,8 +24,11 @@ python -m sp500lab backtest baselines
 ```
 
 ```bash
-python -m sp500lab backtest run momentum_12_1 --all-costs --annual
+python -m sp500lab backtest run momentum_12_1 --all-costs --annual --study my-idea
 ```
+
+Every run is logged as a trial and stops before the reserved holdout by default. That is
+`docs/EXPERIMENTS.md`, and it is worth reading before you start writing strategies.
 
 First-time setup, in order — the engine reads two gold tables that must exist first:
 
@@ -434,19 +437,20 @@ Closing this gap is TODO-8 (the EODHD paid migration), which mainly buys back 20
 
 ## 8. What the baselines actually say
 
-Every baseline, 2007-05-01 → 2026-08-26, $100k, monthly, long-only.
+Every baseline, **2007-05-01 → 2021-12-31** (the research window — 2022 onward is the
+holdout, ADR-025), $100k, monthly, long-only.
 
 **Realistic costs**
 
 ```
 strategy          CAGR     vol  Sharpe    maxDD  turnover  cost_drag  names
-low_vol          8.57%  14.70%    0.63  -39.89%   197.36%      0.62%     50
-equal_weight    10.41%  21.35%    0.57  -58.25%    38.77%      0.89%    387
-random_weight    8.87%  21.47%    0.50  -61.23%  1037.36%      3.03%     50
-rolling_ridge    9.43%  25.08%    0.49  -46.48%   612.88%      2.13%     49
-momentum_12_1    8.85%  23.34%    0.48  -55.53%   354.36%      1.43%     50
-evolved_blend    7.71%  21.00%    0.46  -51.70%   460.50%      1.35%     50
-short_reversal   5.20%  29.02%    0.32  -77.65%  1011.72%      4.20%     50
+equal_weight    11.10%  22.67%    0.58  -58.25%    38.90%      0.96%    358
+random_weight   10.24%  22.78%    0.54  -61.23%  1025.65%      3.55%     50
+rolling_ridge    9.87%  24.63%    0.51  -46.48%   589.52%      2.48%     48
+low_vol          9.84%  15.34%    0.69  -39.89%   191.26%      0.69%     50
+evolved_blend    6.46%  21.66%    0.40  -51.70%   449.79%      1.50%     50
+momentum_12_1    6.39%  23.24%    0.38  -55.53%   353.62%      1.63%     50
+short_reversal   6.36%  30.47%    0.35  -77.65%  1003.95%      5.06%     50
 cash             0.00%   0.00%    0.00    0.00%     0.00%      0.00%      0
 ```
 
@@ -454,15 +458,28 @@ cash             0.00%   0.00%    0.00    0.00%     0.00%      0.00%      0
 `rolling_ridge` is the learned template. Neither has been searched or fitted, so treat
 them as interface demonstrations rather than results.
 
-**Buy-and-hold SPY over the identical window: 10.87%/yr, Sharpe 0.62, maxDD −55.19%.**
+And before believing any of it: with just **eight** trials in this study, the deflated
+Sharpe puts `low_vol` at **0.952** against a 0.95 threshold — the luckiest of eight
+worthless strategies would have posted a 0.37 Sharpe on its own. Eight. A GA run of
+10,000 sets a far higher bar. See `docs/EXPERIMENTS.md`.
 
-Two results worth sitting with.
+**Buy-and-hold SPY over the identical window: 10.42%/yr, Sharpe 0.59, maxDD −55.19%.**
 
-**Nothing beats the index.** No baseline beats buy-and-hold SPY after realistic costs.
-`equal_weight` comes closest on return and gets there with more volatility and a worse
-drawdown. This is the correct null result, and it is the bar every genetic algorithm and
-neural network has to clear. If a model beats these by a lot on the first try, the
-overwhelmingly likely explanation is a bug in the model, not an edge.
+Three results worth sitting with.
+
+**The bar is roughly the index, and only two things clear it.** `equal_weight` beats SPY
+on return (11.10% vs 10.42%) with more volatility and a worse drawdown; `low_vol` beats
+it clearly on Sharpe (0.69 vs 0.59) with a much shallower drawdown. Nothing else does.
+That is the bar every genetic algorithm and neural network has to clear, and if a model
+beats it by a lot on the first try the overwhelmingly likely explanation is a bug in the
+model, not an edge.
+
+**The window matters more than you would like.** Over the *full* 2007–2026 history,
+nothing beat SPY at all — the 2022–2026 stretch was unusually kind to cap-weighted
+mega-caps, and it flatters the index against everything equal-weighted. That period is
+now the holdout, so these numbers exclude it. Two honest tables, different conclusions,
+same engine. It is a preview of exactly why the holdout is worth keeping: it contains a
+regime the research window does not.
 
 **Costs reorder the scoreboard.** Under `optimistic` costs, `random_weight` posts
 **11.17%/yr and the second-best Sharpe of the entire suite** — beating 12-1 momentum.
@@ -567,9 +584,7 @@ Honest list. None of these block strategy work; all of them bound what a result 
   better feature code. This is the next thing to build.
 - **No walk-forward harness.** The engine runs one period. Purging, embargo and a
   touch-once holdout are the GA's scaffolding and are not built.
-- **No experiment registry.** `BacktestResult.save()` writes a manifest with the git
-  commit, strategy parameters, cost model and panel metadata — enough to rebuild a run,
-  not yet enough to search thousands of them.
+- ~~No experiment registry.~~ **Built** — see `docs/EXPERIMENTS.md`, ADR-025/026.
 - **Price coverage** (§7). The binding constraint on the early years.
 - **No point-in-time market cap or sectors** (TODO-5, TODO-6). Any cap-weighted or
   sector-neutral construction is currently unavailable or leaks.
@@ -582,7 +597,8 @@ Honest list. None of these block strategy work; all of them bound what a result 
 
 ## 13. Related reading
 
-- `docs/DECISIONS.md` ADR-016 through ADR-024 — why the engine is shaped this way
+- `docs/EXPERIMENTS.md` — the trial log and the holdout. Read before searching.
+- `docs/DECISIONS.md` ADR-016 through ADR-026 — why the engine is shaped this way
 - `docs/HANDOFF.md` — project state and the remaining TODO list
 - `docs/DATA_DICTIONARY.md` — the gold tables above
 - `docs/ARCHITECTURE.md` — the data layer underneath all of this

@@ -701,3 +701,98 @@ of the id range.
 arbitrary order — a sort key, a `keep="first"`, a dictionary iteration that reaches data
 — ask what that order correlates with. Here it correlated with survival, which is the one
 thing the whole repository exists to keep out of the numbers.
+
+---
+
+## ADR-025 — 2022-01-01 onward is a holdout, and looking at it is recorded
+
+**Status:** accepted (owner decision, 2026-08-27)
+
+**Decision.** Everything from 2022-01-01 is reserved for the final test. Backtests default
+to `holdout="exclude"` and stop the day before. Reaching into it requires an explicit
+mode, and **every such run is appended to a ledger that cannot be disabled.**
+
+**Why now rather than when the search starts.** Run thirty algorithms over 2007-2026, pick
+the best, and the whole sample is spent - there is no clean data left to check the winner
+against, and no later work recovers it. The cost of freezing the last stretch while still
+building the engine is zero. The cost of not having frozen it is total and permanent.
+
+**Why a constant and not a parameter.** A holdout you can move is not a holdout. Moving it
+forward silently converts test data into training data, and the move would be invisible in
+any result that quoted it.
+
+**Why 2022-01-01.** Leaves ~176 months to research in - enough for walk-forward with
+purging and an embargo - and ~56 months held out, enough to be a real test. It also
+contains a regime the research window does not: the 2022 drawdown and the rate cycle.
+
+**Three modes.** `exclude` (default, research window), `include` (full history), `only`
+(the holdout alone - the final test). The last two are looks.
+
+**The asymmetry.** Trial logging can be switched off for a scratch run
+(`SP500LAB_REGISTRY=off`); the holdout ledger cannot. You may run something without
+recording it as a trial. You may never look at the holdout without leaving a trace. Each
+look degrades it, and the ledger is the only way to know how far.
+
+**A bug this exposed immediately.** With `end` capped, the engine's final holding period
+still ran to the end of the panel, so a `holdout="exclude"` run carried straight through
+the reserved data anyway. Runs are now bounded by an `end_row`, and a rebalance on the
+last session of a window is dropped rather than executed - its fill would be at the next
+open, which is outside the window.
+
+**Consequence.** Every documented baseline figure now covers 2007-05..2021-12 rather than
+the full history, and the rankings change with it: over the research window `equal_weight`
+beats SPY on return and `low_vol` beats it on Sharpe, neither of which was true over
+2007-2026. That difference is the argument for the holdout, not against it.
+
+---
+
+## ADR-026 — Every backtest is logged as a trial, by default
+
+**Status:** accepted (2026-08-27)
+
+**Decision.** `run_backtest` appends to an append-only registry unless explicitly told not
+to. Runs are grouped into named *studies*, and `n_trials` for the deflated Sharpe is the
+count of **distinct configurations** within a study.
+
+**Why it must be the default.** The deflated Sharpe (Bailey & Lopez de Prado, 2014) needs
+two inputs that describe the search rather than the winner: how many configurations were
+evaluated, and how much their Sharpes varied. Neither can be reconstructed afterwards. A
+discarded idea leaves no trace anywhere else in this repo - not in git, not in the results
+directory, nowhere. Opt-in logging would mean the numbers are missing precisely when the
+search was informal, which is when the multiple-testing problem is least visible and most
+dangerous.
+
+An unlogged trial is not a small loss. It makes the reported Sharpe of the eventual winner
+not conservative, not optimistic, but meaningless.
+
+**Distinct configurations, not log lines.** Re-running one configuration is one hypothesis
+tested twice; counting it twice would over-deflate and make a real result look worse than
+it is. Runs are fingerprinted on strategy class, parameters, construction, dates, cost
+model, capital, liquidity floor and seed.
+
+The **data version is excluded** from that fingerprint. Re-running one configuration after
+re-ingesting prices is still one hypothesis. The dataset is recorded separately as
+`data_fingerprint`, which is for reproducing a run rather than for counting it.
+
+**Studies are the scope, and the scope is the honesty.** The study boundary decides which
+trials a winner must beat. Splitting one search across several study names understates
+`n_trials` and flatters the result. That takes deliberate effort, which is the best a tool
+can do.
+
+**Monthly statistics are stored alongside the daily ones.** The headline Sharpe comes from
+the daily equity curve; the deflated Sharpe cannot use it. Its derivation assumes
+approximately independent observations, and a monthly-rebalanced portfolio holds a
+constant share vector all month, so its daily returns are heavily autocorrelated. Treating
+~4,900 daily points as independent when there are ~176 monthly ones would overstate every
+Sharpe in the log and make the deflation far too generous. `deflate()` uses the monthly
+figures only.
+
+**Rejected alternative:** logging only runs the user chose to save. That is exactly the
+winners, and the winners are the one population whose count the deflated Sharpe does not
+need.
+
+**Storage.** Append-only JSONL under `data/experiments/`, the same idiom as the bronze
+manifest. `_append` heals a truncated final line before writing, because appending onto a
+partial record would concatenate the two and destroy the good one along with the broken
+one - the ADR-013 failure shape again. Not committed to git: a GA run appends thousands of
+lines. Backed up with vault and bronze, because you cannot re-derive what you tried.

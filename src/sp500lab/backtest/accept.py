@@ -19,6 +19,13 @@ invalidating every downstream result rather than as a bug to work around later.
     4. Determinism        Same inputs and seed produce a byte-identical equity curve.
                           A GA whose fitness function is noisy evolves toward the noise.
 
+Acceptance is calibration, not research. So none of these runs is logged as a trial
+(`log_run=False`) and none of them overrides the holdout policy - the strategy checks
+stop at the research window like everything else. Checks 1 and 1b read the SPY benchmark
+series directly rather than through the engine, over its full 2000-2026 history: that is
+a property of the data feed, not a strategy result, and an index's long-run total return
+is not information anyone can select a strategy with.
+
 Run with `python -m sp500lab backtest accept`, or via pytest in tests/test_backtest.py.
 """
 
@@ -48,6 +55,13 @@ SPY_PRICE_RETURN = 0.0643
 #: reference compounds closes, so exact equality is not expected - but the gap has to
 #: stay far below the ~190bp/yr that a dropped dividend stream would open up.
 TOLERANCE_BP = 25.0
+
+#: Check 2 is an accounting *identity*, not an approximation, so it gets a far tighter
+#: bound than the SPY comparison. It currently lands at 0.1bp. The residual is real and
+#: small: cash left by an order that could not fill, and delisting proceeds parked in
+#: cash where the reference simply renormalises over the survivors. 10bp leaves room for
+#: that to grow as delisting coverage improves without letting a bookkeeping error hide.
+IDENTITY_TOLERANCE_BP = 10.0
 
 
 @dataclass
@@ -140,45 +154,66 @@ def check_adjustment_chain_direction() -> Check:
 def equal_weight_reference(panel: Panel, start: str, end: str | None = None) -> pd.Series:
     """Equal-weight index return computed straight off the panel, no engine involved.
 
-    Deliberately naive: rebalance to equal weights at each month-end execution date and
-    compound the arithmetic mean of the constituent returns. If the engine disagrees
-    with this, one of them is wrong and it is not obvious which.
+    Deliberately naive - no cash, no shares, no cost model. Just: at each execution date
+    form an equally weighted basket of that month's priced constituents, and compound the
+    basket's value. If the engine's bookkeeping disagrees with this, one of them is wrong
+    and it is not obvious which, which is the whole point of having it.
+
+    Two details that are easy to get wrong and were, on the first attempt:
+
+    * **A segment ends the session BEFORE the next execution date, not on it.** On the
+      execution date itself the portfolio has already been rebalanced, so that close
+      belongs to the next segment. Emitting it from both double-counts that day's move.
+    * **Chaining happens at the open, not at the close.** `level` is carried as the
+      portfolio's value at the *open* of the execution date, so the overnight move from
+      the previous close is applied to the OLD basket - which is what actually holds it.
+      Chaining from the previous close silently drops that move on every rebalance.
     """
     end = end or str(panel.dates[-1])
+    end_row = panel.date_index(end, side="prev")
     reb = [int(t) for t in panel.rebalance_index
-           if start <= str(panel.dates[t]) <= end and t + 1 < panel.n_dates
+           if start <= str(panel.dates[t]) and t + 1 <= end_row
            and panel.in_index[t].any()]
-    ac = panel.adj_close
-    level, out_dates, out_vals = 1.0, [], []
+    if not reb:
+        return pd.Series(dtype=float, name="equal_weight_reference")
+
+    ac, ao = panel.adj_close, panel.adj_open
+    level = 1.0                       # value at the OPEN of the current execution date
+    out = np.full(panel.n_dates, np.nan)
 
     for i, t in enumerate(reb):
         e = t + 1
-        nxt = reb[i + 1] + 1 if i + 1 < len(reb) else panel.n_dates - 1
-        # Held from the open of e; valued at each close through nxt.
+        last = i + 1 >= len(reb)
+        ne = end_row + 1 if last else reb[i + 1] + 1
+
         held = np.flatnonzero(panel.in_index[t] & panel.has_price[t]
-                              & np.isfinite(panel.adj_open[e]))
+                              & np.isfinite(ao[e]) & (ao[e] > 0))
         if not len(held):
             continue
-        base = panel.adj_open[e, held]
-        w = np.full(len(held), 1.0 / len(held))
-        for d in range(e, min(nxt, panel.n_dates - 1) + 1):
-            px = ac[d, held]
-            good = np.isfinite(px)
-            if not good.any():
-                continue
-            gross = float((w[good] * px[good] / base[good]).sum() / w[good].sum())
-            out_dates.append(str(panel.dates[d]))
-            out_vals.append(level * gross)
-        if out_vals:
-            level = out_vals[-1]
-    return pd.Series(out_vals, index=out_dates, name="equal_weight_reference")
+        base = ao[e, held]
+
+        for d in range(e, min(ne, end_row + 1)):
+            ratio = ac[d, held] / base
+            if np.isfinite(ratio).any():
+                out[d] = level * float(np.nanmean(ratio))
+
+        if not last:
+            # Roll to the value at the next open, still holding the OLD basket.
+            nxt_open = ao[ne, held] / base
+            if np.isfinite(nxt_open).any():
+                level = level * float(np.nanmean(nxt_open))
+            elif np.isfinite(out[ne - 1]):
+                level = float(out[ne - 1])
+
+    s = pd.Series(out, index=panel.dates, name="equal_weight_reference").dropna()
+    return s
 
 
 def check_equal_weight_identity(panel: Panel, start: str) -> Check:
     """The engine's equal-weight run must match the reference to within a few bp/yr."""
     res = run_backtest("equal_weight", panel=panel, start=start, costs=FREE,
-                       benchmark=None, track_gross=False)
-    ref = equal_weight_reference(panel, start)
+                       benchmark=None, track_gross=False, log_run=False)
+    ref = equal_weight_reference(panel, start, end=res.config["end"])
     common = res.equity.index.intersection(ref.index)
     if len(common) < 100:
         return Check("2. equal-weight identity", False,
@@ -189,7 +224,7 @@ def check_equal_weight_identity(panel: Panel, start: str) -> Check:
     a_cagr = annualised(a)
     b_cagr = annualised(b)
     diff_bp = abs(a_cagr - b_cagr) * 1e4
-    ok = diff_bp <= TOLERANCE_BP
+    ok = diff_bp <= IDENTITY_TOLERANCE_BP
     return Check(
         "2. equal-weight identity", ok,
         f"engine {a_cagr * 100:.3f}%/yr vs reference {b_cagr * 100:.3f}%/yr "
@@ -238,7 +273,7 @@ def check_leakage_guard(panel: Panel, start: str) -> Check:
     for strat, expected, label in cases:
         try:
             run_backtest(strat, panel=panel, start=start, end="2010-12-31",
-                         costs=FREE, benchmark=None, track_gross=False)
+                         costs=FREE, benchmark=None, track_gross=False, log_run=False)
             failures.append(f"{label}: did NOT raise")
         except expected:
             pass
@@ -259,9 +294,9 @@ def check_determinism(panel: Panel, start: str) -> Check:
     mismatches = []
     for name in ("momentum_12_1", "random_weight"):
         a = run_backtest(name, panel=panel, start=start, seed=42, costs="realistic",
-                         benchmark=None, track_gross=False)
+                         benchmark=None, track_gross=False, log_run=False)
         b = run_backtest(name, panel=panel, start=start, seed=42, costs="realistic",
-                         benchmark=None, track_gross=False)
+                         benchmark=None, track_gross=False, log_run=False)
         if not np.array_equal(a.equity.to_numpy(), b.equity.to_numpy()):
             gap = float(np.nanmax(np.abs(a.equity.to_numpy() - b.equity.to_numpy())))
             mismatches.append(f"{name}: max diff {gap:.6g}")
@@ -269,9 +304,9 @@ def check_determinism(panel: Panel, start: str) -> Check:
     # A different seed MUST change the random strategy, or the seed is not wired up
     # and every "independent" run in the noise floor is the same run.
     r1 = run_backtest("random_weight", panel=panel, start=start, seed=1, costs=FREE,
-                      benchmark=None, track_gross=False)
+                      benchmark=None, track_gross=False, log_run=False)
     r2 = run_backtest("random_weight", panel=panel, start=start, seed=2, costs=FREE,
-                      benchmark=None, track_gross=False)
+                      benchmark=None, track_gross=False, log_run=False)
     if np.array_equal(r1.equity.to_numpy(), r2.equity.to_numpy()):
         mismatches.append("random_weight ignored the seed")
 
@@ -293,7 +328,8 @@ def check_no_dividend_double_count(panel: Panel, start: str) -> Check:
     is what catches it: the gap between total and price return would roughly double.
     """
     res = run_backtest("equal_weight", panel=panel, start=start, costs=FREE,
-                       benchmark=None, track_gross=False)
+                       benchmark=None, track_gross=False,
+                       log_run=False)
     eq_cagr = annualised(res.equity)
 
     # Same portfolio, valued on a price-only series: adj_close / adj_factor recovers

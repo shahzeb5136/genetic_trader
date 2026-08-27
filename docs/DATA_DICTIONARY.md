@@ -268,6 +268,33 @@ backtest reports how many of its exits used one. See ADR-021.
 
 ---
 
+### `data/experiments/runs.jsonl`
+Append-only, one JSON object per backtest. Not parquet and not registered in DuckDB —
+it is a provenance log, like `_manifest/ingest_log.jsonl`, and it is appended to
+thousands of times during a GA run.
+
+54 fields per run: identity (`run_id`, `fingerprint`, `study`), configuration, daily
+headline statistics, **monthly** statistics for the deflated Sharpe, honesty diagnostics,
+costs, and provenance (`git_commit`, `git_dirty`, `data_fingerprint`).
+
+⚠️ `fingerprint` identifies a trial *configuration*; `run_id` identifies one execution of
+it. `n_trials` for the deflated Sharpe counts distinct fingerprints, never log lines.
+Load it with `registry.load()`. See ADR-026 and `docs/EXPERIMENTS.md`.
+
+---
+
+### `data/experiments/holdout_log.jsonl`
+Every run that was allowed to see data from 2022-01-01 onward. Append-only and **cannot
+be disabled** — trial logging can be switched off, this cannot (ADR-025).
+
+`at`, `strategy`, `study`, `mode`, `meaning`, `start`, `end`, `holdout_start`, `reason`,
+`git_commit`.
+
+Read it with `sp500lab experiments holdout` before trusting a final test result. Each
+entry means the holdout is worth a little less as an independent check.
+
+---
+
 ### `gold/backtest/panel/*.npz`
 Cached numpy panel, keyed by a hash of the build parameters. Not a parquet table and not
 registered in DuckDB. Disposable — delete it and `build_panel()` rebuilds in ~11s.

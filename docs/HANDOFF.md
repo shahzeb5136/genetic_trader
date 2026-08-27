@@ -45,7 +45,7 @@ Every figure below was measured on 2026-08-27. Re-derive with `python -m sp500la
 **The headline: 971 tickers have been in the index since 2007-03. 501 are in it today.
 470 are gone.** That gap is the entire reason this project exists.
 
-Tests: **79 passing** (`python -m pytest tests/ -q`) — 30 data-layer, 49 engine.
+Tests: **121 passing** (`python -m pytest tests/ -q`) — 30 data-layer, 49 engine, 42 registry.
 Backtest acceptance: **6 of 6 passing** (`python -m sp500lab backtest accept`).
 Bronze integrity: 700 artifacts, all checksums verified, 25 tombstoned.
 
@@ -168,9 +168,9 @@ settings are always reported.
   feature code. **This is the next thing to build.**
 - **No walk-forward harness.** The engine runs one period. Purging, embargo and a
   touch-once holdout are the GA's scaffolding and do not exist yet.
-- **No experiment registry.** `BacktestResult.save()` writes a manifest with git commit,
-  strategy parameters, cost model and panel metadata — enough to rebuild one run, not yet
-  enough to search thousands. The deflated Sharpe ratio needs the trial count from it.
+- ~~No experiment registry.~~ **Built** (ADR-025/026, `docs/EXPERIMENTS.md`). Every run
+  is logged as a trial, and 2022-01-01 onward is a holdout that backtests stop before.
+  Looking at it takes an explicit flag and is permanently recorded.
 - **No market cap series** (TODO-5). Size, value and cap-weighting all need it. The shared
   split-ratio machinery it depends on already exists in `normalize/splits.py`.
 - **Sectors are current-only** (TODO-6). Any sector-neutral strategy leaks.
@@ -234,10 +234,18 @@ short-reversal, random-weight, cash. Numbers in §4. If a model cannot beat 12-1
 after costs it found nothing — and note that 12-1 momentum itself does not beat SPY over
 this window.
 
-**4. Walk-forward harness.** Purging, embargo, touch-once holdout. Required before any
-evolved strategy's number means anything (§6).
+**3b. Experiment registry and holdout — DONE.** Every backtest is logged as a trial;
+2022-01-01 onward is reserved. `docs/EXPERIMENTS.md`, ADR-025/026. This had to land before
+any searching because both mechanisms are lossy if added later.
 
-**5. Then** the genetic algorithms.
+**4. Populate algorithms.** Unblocked now. Write them, tag them with `--study`, and let
+the registry count the trials. Building the feature layer against what they actually
+recompute beats guessing at it.
+
+**5. Walk-forward harness.** Purging and an embargo. Required before any *searched*
+result means anything (§6).
+
+**6. Then** the genetic algorithms.
 
 ---
 
@@ -477,15 +485,16 @@ an indicator inside the fitness function.
 explicitly optimizing the metric you report. Multiple-testing control is not optional
 here:
 
-- Log **every** individual evaluated, not just the winners. The trial count is the input
-  to the deflated Sharpe ratio; without it your reported Sharpe is meaningless.
-  `metrics.deflate_result(perf, n_trials, trial_sharpe_std)` is implemented and waiting —
-  both of its arguments are properties of the *search*, not of the winner.
+- Log **every** individual evaluated, not just the winners. **This is now automatic** —
+  `run_backtest` appends to the registry by default. Wrap a search in
+  `with registry.study("ga-run-3"):` and every individual inside is tagged, then
+  `sp500lab experiments deflate ga-run-3` does the rest. See `docs/EXPERIMENTS.md`.
+- Hold out a final test period and touch it **once**. **This is now enforced** —
+  2022-01-01 onward is excluded by default, and every look is permanently recorded in a
+  ledger that cannot be disabled (ADR-025).
 - Use walk-forward with purging and an embargo. Never random K-fold — financial data is
   autocorrelated and it leaks. López de Prado's *Advances in Financial Machine Learning*
   is the reference; read it before writing the validation loop.
-- Hold out a final test period (last 2–3 years) and touch it **once**. Every look
-  degrades it.
 - Constrain the search space deliberately. An unconstrained GA over indicator
   combinations will find something that works beautifully in-sample every single time.
 
@@ -556,7 +565,7 @@ python -m sp500lab backtest baselines
 Full command reference and troubleshooting: `docs/RUNBOOK.md`.
 The engine, end to end: `docs/BACKTEST.md`.
 Table and column reference: `docs/DATA_DICTIONARY.md`.
-Why anything is the way it is: `docs/DECISIONS.md` (24 ADRs).
+Why anything is the way it is: `docs/DECISIONS.md` (26 ADRs).
 Worked query examples showing the right and wrong way: `scripts/explore.py`.
 
 **Secrets:** `.env` is gitignored and holds `EODHD_API_TOKEN`. The current token is a

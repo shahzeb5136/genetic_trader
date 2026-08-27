@@ -55,6 +55,7 @@ from .costs import CostBreakdown, CostModel, get_cost_model
 from .panel import Panel, build_panel
 from .portfolio import turnover as compute_turnover
 from .portfolio import validate_weights
+from .registry import HOLDOUT_START, apply_holdout, record_holdout_touch
 from .results import BacktestResult
 from .strategy import Strategy, get_strategy, normalize_weights
 
@@ -89,6 +90,10 @@ def run_backtest(
     track_gross: bool = True,
     min_coverage: float = DEFAULT_MIN_COVERAGE,
     strategy_kwargs: dict | None = None,
+    holdout: str = "exclude",
+    study: str | None = None,
+    log_run: bool = True,
+    notes: str = "",
 ) -> BacktestResult:
     """Run one strategy over one period and return everything it produced.
 
@@ -101,6 +106,19 @@ def run_backtest(
     track_gross     also run the identical path with costs off, to measure cost drag
     min_coverage    refuse to run if any rebalance prices less than this share of the
                     index; 0.0 reports the number instead of refusing
+    holdout         'exclude' (default) stops the day before HOLDOUT_START;
+                    'include' runs straight through it; 'only' runs the holdout alone.
+                    The last two are recorded in the holdout ledger and cannot be
+                    silenced - see registry.py and ADR-025.
+    study           name of the search this run belongs to. Decides `n_trials` for the
+                    deflated Sharpe, so it should match the search you actually did.
+    log_run         append to the experiment registry. On by default because a trial you
+                    forgot to log cannot be recovered (ADR-026). The holdout ledger is
+                    written regardless of this flag.
+    notes           free text stored with the run
+
+    Note the asymmetry between `holdout` and `log_run`: you may run something without
+    logging it as a trial, but you may not look at the holdout without leaving a trace.
     """
     t_start = time.perf_counter()
     if isinstance(strategy, str):
@@ -109,7 +127,17 @@ def run_backtest(
     cost_model = get_cost_model(costs)
     rng = np.random.default_rng(seed)
 
-    reb = _rebalance_rows(panel, start, end, getattr(strategy, "warmup", 0))
+    start, end, touched = apply_holdout(start, end, holdout, str(panel.dates[-1]))
+    if touched:
+        record_holdout_touch(
+            strategy=getattr(strategy, "name", type(strategy).__name__),
+            study=study, mode=holdout, start=start, end=end, reason=notes)
+
+    # The last session the run may see. Everything downstream is bounded by this row,
+    # not by the panel's end - otherwise the final holding period would run to the end
+    # of the data and a holdout="exclude" run would carry straight through the holdout.
+    end_row = panel.date_index(end, side="prev")
+    reb = _rebalance_rows(panel, start, end_row, getattr(strategy, "warmup", 0))
     if len(reb) < 2:
         raise EngineError(
             f"only {len(reb)} usable rebalance date(s) between {start} and {end}. "
@@ -125,14 +153,13 @@ def run_backtest(
     gross = _State(panel, initial_capital) if track_gross else None
     from .costs import FREE
 
-    D = panel.n_dates
     ledger: list[dict] = []
     weight_rows: list[np.ndarray] = []
     total_costs = CostBreakdown()
 
     for i, t in enumerate(reb):
         exec_row = t + 1
-        next_exec = reb[i + 1] + 1 if i + 1 < len(reb) else D - 1
+        next_exec = reb[i + 1] + 1 if i + 1 < len(reb) else end_row
 
         # ---- signal, formed from data up to and including the close of t ----------
         ctx = Context(
@@ -193,11 +220,13 @@ def run_backtest(
     result = BacktestResult(
         strategy=getattr(strategy, "name", type(strategy).__name__),
         config={
-            "start": str(panel.dates[reb[0]]), "end": str(panel.dates[-1]),
+            "start": str(panel.dates[reb[0]]), "end": str(panel.dates[end_row]),
             "initial_capital": initial_capital,
             "cost_model": cost_model.name, "cost_params": cost_model.describe(),
             "liquidity_floor": liquidity_floor, "seed": seed,
             "benchmark": benchmark, "n_rebalances": len(reb),
+            "holdout_mode": holdout, "touched_holdout": touched,
+            "holdout_start": HOLDOUT_START,
             "strategy_detail": (strategy.describe() if hasattr(strategy, "describe")
                                 else {"name": getattr(strategy, "name", "?")}),
             "panel": panel.meta,
@@ -209,6 +238,14 @@ def run_backtest(
                              columns=panel.security_ids),
         exits=exits, costs=total_costs, diagnostics=diagnostics,
     )
+    if log_run:
+        from .registry import log as log_run_to_registry
+        rec = log_run_to_registry(result, study=study, notes=notes)
+        if rec is not None:
+            result.config["run_id"] = rec.run_id
+            result.config["fingerprint"] = rec.fingerprint
+            result.config["study"] = rec.study
+
     log.info("%s: CAGR %.2f%%  Sharpe %.2f  maxDD %.1f%%  (%.2fs)",
              result.strategy, perf.cagr * 100, perf.sharpe,
              perf.max_drawdown * 100, elapsed)
@@ -391,12 +428,17 @@ class _State:
 # Helpers
 # --------------------------------------------------------------------------
 
-def _rebalance_rows(panel: Panel, start: str, end: str | None, warmup: int) -> list[int]:
-    """Month-end sessions in range that have a following session to execute in."""
-    end = end or str(panel.dates[-1])
+def _rebalance_rows(panel: Panel, start: str, end_row: int, warmup: int) -> list[int]:
+    """Month-end sessions in range that have a following session to execute in.
+
+    `t + 1 <= end_row` rather than `t <= end_row`: a rebalance on the very last session
+    of the window has nowhere to fill, and letting it execute one session later would
+    reach past the window - which under a holdout policy means reaching into reserved
+    data. Dropping it is the honest choice.
+    """
     rows = [int(t) for t in panel.rebalance_index
-            if start <= str(panel.dates[t]) <= end
-            and t + 1 < panel.n_dates and t >= warmup]
+            if start <= str(panel.dates[t])
+            and t + 1 <= end_row and t >= warmup]
     # A rebalance with an empty point-in-time universe is not a rebalance, it is a
     # date before the membership history begins.
     return [t for t in rows if panel.in_index[t].any()]
@@ -473,9 +515,14 @@ def _diagnostics(panel: Panel, reb: list[int], cov: dict, exits: pd.DataFrame,
 
 
 def _series(dates: np.ndarray, nav: np.ndarray) -> pd.Series:
+    """Trim to the span the run actually covered, both ends.
+
+    Trailing NaNs matter now that a run can end before the panel does: leaving them in
+    would make the curve claim a length it does not have.
+    """
     s = pd.Series(nav, index=dates, name="nav")
-    first = s.first_valid_index()
-    return s.loc[first:] if first is not None else s
+    first, last = s.first_valid_index(), s.last_valid_index()
+    return s.loc[first:last] if first is not None else s
 
 
 def _benchmark_series(ticker: str, equity: pd.Series) -> pd.Series | None:

@@ -213,13 +213,26 @@ evaluations take 28 minutes instead of 28 hours. Full narrative: `docs/BACKTEST.
 
 ---
 
+## Research provenance, alongside data provenance
+
+`data/_manifest/ingest_log.jsonl` records where every byte came from. `data/experiments/`
+does the same for research: `runs.jsonl` logs every backtest as a trial, and
+`holdout_log.jsonl` records every look at the reserved 2022-onward period.
+
+The reasoning is identical to why bronze is sacred. **You cannot re-derive what you
+tried.** A discarded strategy leaves no trace in git or anywhere else, and without the
+trial count the deflated Sharpe cannot be computed — which makes a searched result
+meaningless rather than merely uncertain. So both files are append-only, and the holdout
+ledger cannot be switched off even when trial logging is. See `docs/EXPERIMENTS.md`.
+
+---
+
 ## What is deliberately absent
 
 The **feature layer** and everything downstream of it:
 
 - `gold/` feature matrices and labels, versioned, with leakage tests (TODO-4)
 - a walk-forward harness with purging and an embargo
-- an experiment registry recording code commit + data version + feature version per run
 - the genetic algorithms and neural networks themselves
 
 The engine deliberately shipped before the features so that the fitness function exists

@@ -16,6 +16,10 @@ data/vault/    Downloads made during a *paid* subscription window. Physically
                separate from bronze so it is obvious what cannot be re-fetched.
 data/_cache/   HTTP response cache keyed by request hash (fetch-once discipline).
 data/_manifest/Append-only ingestion log with checksums and provenance.
+data/experiments/ Append-only record of every backtest run, and the holdout ledger.
+               Provenance for research rather than for ingestion: you cannot
+               re-derive what you tried, so it is treated like bronze - append-only,
+               never rewritten, and backed up. See docs/EXPERIMENTS.md.
 """
 
 from __future__ import annotations
@@ -39,11 +43,18 @@ VAULT_DIR = DATA_DIR / "vault"
 CACHE_DIR = DATA_DIR / "_cache"
 MANIFEST_DIR = DATA_DIR / "_manifest"
 
+EXPERIMENTS_DIR = DATA_DIR / "experiments"
+
 INGEST_LOG = MANIFEST_DIR / "ingest_log.jsonl"
+#: Every backtest run. One JSON object per line, append-only.
+EXPERIMENT_LOG = EXPERIMENTS_DIR / "runs.jsonl"
+#: Every time a run was allowed to see holdout data. Never disabled - see ADR-025.
+HOLDOUT_LOG = EXPERIMENTS_DIR / "holdout_log.jsonl"
 
 ALL_DIRS = [
     CONFIG_DIR, DOCS_DIR, LOGS_DIR, DATA_DIR,
     BRONZE_DIR, SILVER_DIR, GOLD_DIR, VAULT_DIR, CACHE_DIR, MANIFEST_DIR,
+    EXPERIMENTS_DIR,
 ]
 
 

@@ -116,6 +116,10 @@ python -m sp500lab backtest accept
 python -m sp500lab backtest baselines
 ```
 
+```bash
+python -m sp500lab experiments studies
+```
+
 Or from Python:
 
 ```python
@@ -156,6 +160,12 @@ it essential.
 receives a numpy view that physically ends at its as-of date, so indexing tomorrow raises
 `IndexError` rather than returning a price. See [ADR-017](docs/DECISIONS.md).
 
+**7. Every trial is counted, and the holdout is watched.** Backtests are logged
+automatically and stop before a reserved 2022-onward holdout. Looking at that period takes
+an explicit flag and is always recorded — trial logging can be switched off, the holdout
+ledger cannot. Without the trial count, a searched Sharpe is not conservative or
+optimistic; it is meaningless. See [EXPERIMENTS.md](docs/EXPERIMENTS.md).
+
 ---
 
 ## The backtest engine
@@ -173,20 +183,24 @@ numbers — 6.43%/yr means dividends were dropped, 10.2% means they were counted
 python -m sp500lab backtest baselines
 ```
 
-Every baseline, 2007-05 → 2026-08, $100k, monthly, long-only, realistic costs:
+Every baseline, **2007-05 → 2021-12** (the research window; 2022 onward is a holdout),
+$100k, monthly, long-only, realistic costs:
 
 | Strategy | CAGR | Vol | Sharpe | maxDD | Turnover |
 |---|---:|---:|---:|---:|---:|
-| low_vol | 8.57% | 14.70% | 0.63 | −39.89% | 197% |
-| equal_weight | 10.41% | 21.35% | 0.57 | −58.25% | 39% |
-| random_weight | 8.87% | 21.47% | 0.50 | −61.23% | 1037% |
-| momentum_12_1 | 8.85% | 23.34% | 0.48 | −55.53% | 354% |
-| **Buy-and-hold SPY** | **10.87%** | **19.69%** | **0.62** | **−55.19%** | — |
+| equal_weight | 11.10% | 22.67% | 0.58 | −58.25% | 39% |
+| random_weight | 10.24% | 22.78% | 0.54 | −61.23% | 1026% |
+| low_vol | 9.84% | 15.34% | **0.69** | −39.89% | 191% |
+| momentum_12_1 | 6.39% | 23.24% | 0.38 | −55.53% | 354% |
+| **Buy-and-hold SPY** | **10.42%** | **20.35%** | **0.59** | **−55.19%** | — |
 
-**Nothing beats the index.** That is the correct null result and the bar every model has to
-clear. And under *optimistic* costs `random_weight` posts 11.17%/yr with the second-best
-Sharpe in the suite — beating 12-1 momentum — which is why all three cost settings are
-always reported.
+Only `low_vol` (on Sharpe) and `equal_weight` (on return) clear the index — that is the
+bar every model has to beat. Over the *full* 2007–2026 history nothing beat SPY at all;
+2022–2026 was unusually kind to cap-weighted mega-caps. Same engine, different window,
+different conclusion, which is precisely why that period is now held out.
+
+And under *optimistic* costs `random_weight` posts the second-best Sharpe in the suite,
+beating 12-1 momentum — which is why all three cost settings are always reported.
 
 A full backtest runs in ~0.17s, so a 10,000-evaluation genetic algorithm is about 28
 minutes of fitness evaluation rather than 28 hours.
@@ -208,6 +222,7 @@ model refit at every rebalance, with no training label reaching the as-of date).
 | [DECISIONS.md](docs/DECISIONS.md) | ADRs — *why* things are the way they are |
 | [RUNBOOK.md](docs/RUNBOOK.md) | Operating it, troubleshooting, the paid-data migration |
 | [BACKTEST.md](docs/BACKTEST.md) | The engine: design, writing a strategy, costs, baselines |
+| [EXPERIMENTS.md](docs/EXPERIMENTS.md) | The trial log and the holdout — read before searching |
 | [HANDOFF.md](docs/HANDOFF.md) | Project state and the remaining TODO list |
 
 ---
@@ -253,11 +268,13 @@ These are measured, not guessed. Each is documented in full in `docs/`.
 
 In order. Full specifications in [HANDOFF.md](docs/HANDOFF.md) §5b.
 
-1. **Feature layer** in `data/gold/`, versioned, with a byte-identical leakage test. The
-   engine already has the slot for it; without it the competition measures feature-writing
-   rather than signal.
-2. **Walk-forward harness** — purging, embargo, a touch-once holdout.
-3. **Backfill the price gap** with a paid EOD feed (~$17/mo annual billing), then re-run the
+1. **Populate algorithms.** The engine takes them, every run is logged as a trial, and the
+   holdout is protected. This is the part that is now unblocked.
+2. **Feature layer** in `data/gold/`, versioned, with a byte-identical leakage test —
+   built against what those algorithms actually recompute, rather than guessed at.
+3. **Walk-forward harness** — purging and an embargo. Required before any *searched*
+   result means anything.
+4. **Backfill the price gap** with a paid EOD feed (~$17/mo annual billing), then re-run the
    identical pipeline and **measure the survivorship-bias delta yourself**. Expect the
    baselines to get *worse*: that is the bias being removed.
-4. **Then** the genetic algorithms and the neural nets.
+5. **Then** the genetic algorithms and the neural nets.
