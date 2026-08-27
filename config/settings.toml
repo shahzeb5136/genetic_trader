@@ -1,0 +1,33 @@
+# Non-secret configuration. Safe to commit.
+# Secrets (API keys) belong in .env - see .env.example.
+
+[identity]
+# SEC EDGAR REQUIRES a descriptive User-Agent with contact info, or it returns 403.
+# See docs/SOURCES.md. Override with SP500LAB_USER_AGENT in .env.
+user_agent = "sp500lab/0.1 (research; y.shahzeb@gmail.com)"
+
+[universe]
+# Backtests start here. MEASURED boundary, not a guess: Wikipedia revisions before
+# 2007-03 list constituents as bulleted company names with no ticker column at all,
+# so ticker-level membership is unrecoverable there. See docs/DECISIONS.md ADR-004.
+history_start = "2007-03-01"
+# Price history target. Deeper than history_start so indicators have warmup room.
+price_start = "2000-01-01"
+
+[rate_limits]
+# requests per second, per host. SEC's published ceiling is 10/s; we stay under it.
+"www.sec.gov" = 8.0
+"data.sec.gov" = 8.0
+"en.wikipedia.org" = 4.0
+"cdn.finra.org" = 4.0
+"fred.stlouisfed.org" = 4.0
+_default = 2.0
+
+[http]
+max_retries = 5
+backoff_base_seconds = 1.5
+timeout_seconds = 60
+
+[storage]
+# Parquet compression for silver/gold layers.
+compression = "zstd"

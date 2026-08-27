@@ -1,0 +1,21 @@
+# Data is never committed: it is large, partly licensed, and reproducible.
+# Directory structure is preserved via .gitkeep files.
+data/**
+!data/**/
+!data/**/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Secrets
+.env
+config/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
