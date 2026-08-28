@@ -796,3 +796,94 @@ manifest. `_append` heals a truncated final line before writing, because appendi
 partial record would concatenate the two and destroy the good one along with the broken
 one - the ADR-013 failure shape again. Not committed to git: a GA run appends thousands of
 lines. Backed up with vault and bronze, because you cannot re-derive what you tried.
+
+---
+
+## ADR-027 — Month-end equity curves are stored with every run
+
+**Status:** accepted (2026-08-28)
+
+**Decision.** `registry.log()` also writes each run's month-end equity curve to
+`data/experiments/curves.jsonl`, keyed by `run_id`, rebased to 1.0, with `nav_gross` and
+`benchmark` alongside when they exist.
+
+**The gap this closes.** The registry recorded summary statistics and nothing else, so a
+run's equity curve survived only if `--save` was passed by hand. A report could therefore
+show a leaderboard but could not plot any historical run without re-running it. This was
+found by asking what a frontend would need, before building one - which is the argument
+for designing the frontend early even when there is little to look at yet.
+
+**Why monthly rather than daily, measured rather than guessed.**
+
+| Stored per run | Size | 10,000 GA individuals |
+|---|---|---|
+| Daily curve | ~30 KB | ~300 MB |
+| Month-end, three series | ~7 KB | ~75 MB |
+
+The strategy only trades at month ends (ADR-016), so month-end is where the information
+is. Nothing a comparison chart shows is lost, and it is the same frequency the deflated
+Sharpe already uses for the reason given in ADR-026.
+
+**Why a separate file.** `runs.jsonl` is the searchable index and `load()` parses all of
+it. Putting curves inline would make every query parse ~7 KB per run it does not use. The
+split keeps the index lean and loads curves only when something asks to draw one.
+
+**Escape hatch.** `run_backtest(..., log_curve=False)` for a large search. Re-running a
+winner afterwards recovers its curve, and because the fingerprint does not change, that
+re-run is the same trial rather than a new one - so recovering a curve cannot inflate
+`n_trials`.
+
+**A gross curve identical to the net one is skipped** rather than stored twice; that is
+every zero-cost run.
+
+---
+
+## ADR-028 — Reports are static self-contained HTML, and the view layer is pure
+
+**Status:** accepted (owner decision, 2026-08-28)
+
+**Decision.** `sp500lab report` writes one self-contained HTML file per report - inline
+stylesheet, inline script, inline SVG, no network requests. Behind it, everything up to
+and including `views.py` produces no markup.
+
+**Why static rather than a served application.** The project's constraints are a $20/month
+budget, one person, no cloud, and "the whole thing fits on a USB stick". A report that
+needs a running process to be read does not survive those constraints, and neither does
+one that fetches a charting library from a CDN. A file that opens offline in five years,
+sits next to the commit that produced it, and can be emailed, does.
+
+Interactivity is deliberately small - toggle a series, sort a column, hover for a value -
+which is what a reader actually does with a backtest report. Anything beyond that wants a
+real application, and that is a separate decision to make later rather than a feature to
+creep into this one.
+
+**Why hand-rolled SVG.** The chart vocabulary is five primitives of simple geometry, so
+emitting SVG costs less than embedding hundreds of kilobytes of library in *every* report.
+It also buys exact theme control: every colour is a CSS custom property, which is how one
+stylesheet flips a report between light and dark without regenerating it.
+
+**The part that matters more than the charts: the seam.** A frontend is the most likely
+component to be rewritten. If it reaches into `BacktestResult` internals or parses JSONL by
+hand, every rewrite risks quietly changing what a number means. So `series.py`,
+`tables.py` and `views.py` are pure - registry rows in, dataclasses out - and `specs.py`
+describes *what* to draw while `render/` decides *how*. Replacing the presentation layer
+means reimplementing `render/` and nothing else.
+
+The test suite is the evidence this holds: 47 tests, almost all asserting on numbers, and
+only a handful touching markup at all.
+
+**A bug this immediately caught.** `theme.direction` first inferred a metric's direction
+from its name and concluded that lower drawdown is better. Drawdown is stored negative, so
+the scoreboard highlighted -77.65% - the worst result in the table - as the best in its
+column. It read plausibly in code and was visible only on screen. The direction map is now
+explicit, unknown metrics return "no direction" rather than a guess, and
+`test_worst_drawdown_is_never_the_best` pins it.
+
+**Editorial rule, enforced in `views.py`.** Every report carries an honesty section, and
+the deflation panel sits beside the scoreboard rather than behind a link. A report showing
+a 12% CAGR that mentions on page four that half the index was untradable has already
+misled its reader.
+
+**Consequence.** `reports/` is gitignored - a report rebuilds from the registry in under a
+second, and a 100 KB file per run would bloat the repo. The registry is the artifact worth
+backing up; the report is a view of it.

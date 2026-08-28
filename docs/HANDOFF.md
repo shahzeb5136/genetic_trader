@@ -41,11 +41,13 @@ Every figure below was measured on 2026-08-27. Re-derive with `python -m sp500la
 | `benchmarks` | 32,577 | SPY, RSP, ^GSPC, IWM, ^VIX |
 | `gold_half_spread` | 3,706,372 | Estimated half-spread per (security, date) |
 | `gold_delisting_returns` | 518 | Exit assumption per security, with its reasoning |
+| `experiments/runs.jsonl` | per run | Trial log: 54 fields, append-only |
+| `experiments/curves.jsonl` | per run | Month-end equity curves, for reports |
 
 **The headline: 971 tickers have been in the index since 2007-03. 501 are in it today.
 470 are gone.** That gap is the entire reason this project exists.
 
-Tests: **121 passing** (`python -m pytest tests/ -q`) — 30 data-layer, 49 engine, 42 registry.
+Tests: **168 passing** (`python -m pytest tests/ -q`) — 30 data-layer, 49 engine, 42 registry, 47 reporting.
 Backtest acceptance: **6 of 6 passing** (`python -m sp500lab backtest accept`).
 Bronze integrity: 700 artifacts, all checksums verified, 25 tombstoned.
 
@@ -238,9 +240,13 @@ this window.
 2022-01-01 onward is reserved. `docs/EXPERIMENTS.md`, ADR-025/026. This had to land before
 any searching because both mechanisms are lossy if added later.
 
-**4. Populate algorithms.** Unblocked now. Write them, tag them with `--study`, and let
-the registry count the trials. Building the feature layer against what they actually
-recompute beats guessing at it.
+**3c. Static HTML reports — DONE.** `sp500lab report study|run|registry|compare|honesty`
+writes a self-contained file per report. `docs/REPORTS.md`, ADR-027/028. Building it
+surfaced the gap it now fills: the registry had no equity curves.
+
+**4. Populate algorithms.** Unblocked now. Write them, tag them with `--study`, let the
+registry count the trials, and read them with `sp500lab report`. Building the feature
+layer against what they actually recompute beats guessing at it.
 
 **5. Walk-forward harness.** Purging and an embargo. Required before any *searched*
 result means anything (§6).
@@ -565,7 +571,7 @@ python -m sp500lab backtest baselines
 Full command reference and troubleshooting: `docs/RUNBOOK.md`.
 The engine, end to end: `docs/BACKTEST.md`.
 Table and column reference: `docs/DATA_DICTIONARY.md`.
-Why anything is the way it is: `docs/DECISIONS.md` (26 ADRs).
+Why anything is the way it is: `docs/DECISIONS.md` (28 ADRs).
 Worked query examples showing the right and wrong way: `scripts/explore.py`.
 
 **Secrets:** `.env` is gitignored and holds `EODHD_API_TOKEN`. The current token is a

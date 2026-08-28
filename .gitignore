@@ -9,6 +9,9 @@ logs/*
 # Saved backtest results: reproducible from a manifest, and one GA run makes thousands.
 results/
 
+# Generated HTML reports: rebuilt from the registry in under a second (ADR-028).
+reports/
+
 # Secrets
 .env
 config/secrets.toml

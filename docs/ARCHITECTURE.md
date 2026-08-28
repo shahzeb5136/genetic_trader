@@ -227,6 +227,28 @@ ledger cannot be switched off even when trial logging is. See `docs/EXPERIMENTS.
 
 ---
 
+## Reporting sits on the registry, not on the engine
+
+```
+   REGISTRY                    REPORTING                      OUTPUT
+   ────────                    ─────────                      ──────
+   runs.jsonl    ┐        ┌─ series.py     curves.jsonl  ├──────► ├─ tables.py   ) PURE - no markup ──► one self-contained
+   holdout_log   ┘        └─ views.py   /                       .html file
+                                 │
+                                 ▼  specs: what to draw, never how
+                            render/charts.py -> SVG
+                            render/html.py   -> document
+```
+
+Reports never touch the engine or a `BacktestResult`. They read the registry, which means
+a report can be rebuilt for a run made months ago without re-running anything - and it
+means the presentation layer can be replaced by reimplementing `render/` alone.
+
+Everything above the specs boundary produces numbers, not tags, so a change to how a chart
+looks cannot quietly change what it shows. See ADR-028 and `docs/REPORTS.md`.
+
+---
+
 ## What is deliberately absent
 
 The **feature layer** and everything downstream of it:

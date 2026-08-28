@@ -120,6 +120,10 @@ python -m sp500lab backtest baselines
 python -m sp500lab experiments studies
 ```
 
+```bash
+python -m sp500lab report study baselines --open
+```
+
 Or from Python:
 
 ```python
@@ -205,6 +209,13 @@ beating 12-1 momentum — which is why all three cost settings are always report
 A full backtest runs in ~0.17s, so a 10,000-evaluation genetic algorithm is about 28
 minutes of fitness evaluation rather than 28 hours.
 
+Results visualise into a single self-contained HTML file — no server, no CDN, no build
+step — with equity curves, drawdowns, a sortable leaderboard and the deflated Sharpe:
+
+```bash
+python -m sp500lab report study baselines --open
+```
+
 All three model families implement the same interface and the engine cannot tell them
 apart — `strategies/baselines.py` (traditional rules), `strategies/evolvable.py` (genome
 encode/decode plus a bounded search space, ready for a GA) and `strategies/learned.py` (a
@@ -223,6 +234,7 @@ model refit at every rebalance, with no training label reaching the as-of date).
 | [RUNBOOK.md](docs/RUNBOOK.md) | Operating it, troubleshooting, the paid-data migration |
 | [BACKTEST.md](docs/BACKTEST.md) | The engine: design, writing a strategy, costs, baselines |
 | [EXPERIMENTS.md](docs/EXPERIMENTS.md) | The trial log and the holdout — read before searching |
+| [REPORTS.md](docs/REPORTS.md) | Static HTML reports: what they show, and the view-layer split |
 | [HANDOFF.md](docs/HANDOFF.md) | Project state and the remaining TODO list |
 
 ---

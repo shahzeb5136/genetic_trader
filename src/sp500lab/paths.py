@@ -50,6 +50,12 @@ INGEST_LOG = MANIFEST_DIR / "ingest_log.jsonl"
 EXPERIMENT_LOG = EXPERIMENTS_DIR / "runs.jsonl"
 #: Every time a run was allowed to see holdout data. Never disabled - see ADR-025.
 HOLDOUT_LOG = EXPERIMENTS_DIR / "holdout_log.jsonl"
+#: Month-end equity curves, one line per run, keyed by run_id. Split out from runs.jsonl
+#: so the searchable index stays small - see ADR-027.
+CURVE_LOG = EXPERIMENTS_DIR / "curves.jsonl"
+
+#: Generated HTML reports. Disposable: rebuildable from the registry at any time.
+REPORTS_DIR = PROJECT_ROOT / "reports"
 
 ALL_DIRS = [
     CONFIG_DIR, DOCS_DIR, LOGS_DIR, DATA_DIR,

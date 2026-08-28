@@ -85,7 +85,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 import numpy as np
 import pandas as pd
 
-from ..paths import EXPERIMENT_LOG, HOLDOUT_LOG
+from ..paths import CURVE_LOG, EXPERIMENT_LOG, HOLDOUT_LOG
 from . import metrics
 
 if TYPE_CHECKING:  # avoid a circular import at runtime
@@ -334,11 +334,14 @@ def fingerprint(*, strategy_class: str, params: dict, construction: dict | None,
 
 
 def log(result: "BacktestResult", *, study: str | None = None, notes: str = "",
-        force: bool = False) -> RunRecord | None:
+        force: bool = False, curve: bool = True) -> RunRecord | None:
     """Append one backtest to the registry. Returns None if logging is disabled.
 
     Called automatically by `run_backtest`. Call it by hand only for a result you built
     some other way.
+
+    `curve` also stores the month-end equity curve so a report can plot this run later
+    without re-running it. See `log_curve` for the sizing argument.
     """
     if not enabled() and not force:
         return None
@@ -409,7 +412,128 @@ def log(result: "BacktestResult", *, study: str | None = None, notes: str = "",
         runtime_seconds=float(diag.get("runtime_seconds", 0.0) or 0.0),
     )
     _append(EXPERIMENT_LOG, rec.as_dict())
+    if curve:
+        log_curve(rec.run_id, result)
     return rec
+
+
+# --------------------------------------------------------------------------
+# Equity curves
+# --------------------------------------------------------------------------
+
+#: Values are rounded to this many decimals before storage. Curves are rebased to 1.0,
+#: so six decimals is sub-basis-point - far finer than anything a chart can show, and it
+#: roughly halves the file.
+_CURVE_DECIMALS = 6
+
+
+def log_curve(run_id: str, result: "BacktestResult") -> bool:
+    """Store a run's MONTH-END equity curve, rebased to 1.0. Returns False if skipped.
+
+    Why monthly, and why a separate file
+    ------------------------------------
+    A frontend needs curves; the registry index does not. Keeping them in `runs.jsonl`
+    would make every `load()` parse data no query uses, and a GA appends thousands of
+    rows.
+
+    Monthly rather than daily is a sizing decision, measured rather than guessed: a daily
+    curve is ~30 KB per run, so 10,000 GA individuals would cost ~300 MB. Month-end is
+    ~1.4 KB, so the same run costs ~14 MB - and since the strategy only trades at month
+    ends, the monthly series is where the information actually is. Nothing a comparison
+    chart shows is lost.
+
+    `nav_gross` and `benchmark` are stored when present, so cost drag and relative
+    performance can be drawn without re-running anything. A gross curve identical to the
+    net one (a zero-cost run) is skipped rather than stored twice.
+
+    Measured cost: ~7 KB per run with all three series, so a 10,000-individual GA run is
+    ~76 MB. That is affordable but not free, and `load_curves` parses the whole file. A
+    large search should pass `curve=False` and re-run its winners afterwards - the
+    fingerprint is unchanged, so re-running a winner is the same trial, not a new one.
+    """
+    eq = result.equity.dropna().astype(float)
+    if len(eq) < 2:
+        return False
+
+    payload: dict[str, Any] = {"run_id": run_id, "freq": "M",
+                               "strategy": result.strategy,
+                               "study": result.config.get("study")}
+    gross = result.gross_equity
+    if gross is not None:
+        aligned = gross.reindex(eq.index).astype(float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            same = np.nanmax(np.abs(aligned.to_numpy() / eq.to_numpy() - 1.0)) < 1e-9
+        if same:
+            gross = None       # a zero-cost run; storing it twice buys nothing
+
+    dates = None
+    for name, series in (("nav", result.equity),
+                         ("nav_gross", gross),
+                         ("benchmark", result.benchmark)):
+        if series is None:
+            continue
+        m = _to_monthly(series)
+        if m is None or m.empty:
+            continue
+        if dates is None:
+            dates = [str(d) for d in m.index]
+            payload["dates"] = dates
+        # Reindex onto the nav grid so every column shares one date axis.
+        m = m.reindex(dates)
+        payload[name] = [None if not np.isfinite(v) else round(float(v), _CURVE_DECIMALS)
+                         for v in (m / m.dropna().iloc[0]).to_numpy()]
+
+    if dates is None:
+        return False
+    _append(CURVE_LOG, payload)
+    return True
+
+
+def _to_monthly(series: pd.Series) -> pd.Series | None:
+    s = series.dropna().astype(float)
+    if len(s) < 2:
+        return None
+    idx = pd.DatetimeIndex(pd.to_datetime(pd.Series(list(s.index))))
+    m = pd.Series(s.to_numpy(), index=idx).resample("ME").last().dropna()
+    m.index = m.index.strftime("%Y-%m-%d")
+    return m
+
+
+def load_curves(run_ids: "list[str] | str | None" = None) -> dict[str, pd.DataFrame]:
+    """{run_id: DataFrame} of stored curves, indexed by month end.
+
+    Reads the file once however many runs are asked for, so drawing a ten-strategy
+    comparison is a single pass rather than ten.
+    """
+    if isinstance(run_ids, str):
+        run_ids = [run_ids]
+    wanted = set(run_ids) if run_ids is not None else None
+
+    out: dict[str, pd.DataFrame] = {}
+    for rec in _read(CURVE_LOG):
+        rid = rec.get("run_id")
+        if wanted is not None and rid not in wanted:
+            continue
+        dates = rec.get("dates") or []
+        if not dates:
+            continue
+        cols = {k: rec[k] for k in ("nav", "nav_gross", "benchmark")
+                if k in rec and rec[k] is not None}
+        if not cols:
+            continue
+        df = pd.DataFrame(cols, index=pd.Index(dates, name="date"))
+        df.attrs["strategy"] = rec.get("strategy", "")
+        df.attrs["study"] = rec.get("study")
+        out[rid] = df                      # a later write supersedes an earlier one
+    return out
+
+
+def load_curve(run_id: str) -> pd.DataFrame | None:
+    return load_curves([run_id]).get(run_id)
+
+
+def has_curve(run_id: str) -> bool:
+    return load_curve(run_id) is not None
 
 
 def monthly_stats(equity: pd.Series) -> dict:

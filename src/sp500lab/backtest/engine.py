@@ -93,6 +93,7 @@ def run_backtest(
     holdout: str = "exclude",
     study: str | None = None,
     log_run: bool = True,
+    log_curve: bool = True,
     notes: str = "",
 ) -> BacktestResult:
     """Run one strategy over one period and return everything it produced.
@@ -115,6 +116,9 @@ def run_backtest(
     log_run         append to the experiment registry. On by default because a trial you
                     forgot to log cannot be recovered (ADR-026). The holdout ledger is
                     written regardless of this flag.
+    log_curve       also store the month-end equity curve, so a report can plot this run
+                    later without re-running it (~7 KB). A large search should turn this
+                    off and re-run its winners; see registry.log_curve.
     notes           free text stored with the run
 
     Note the asymmetry between `holdout` and `log_run`: you may run something without
@@ -240,7 +244,7 @@ def run_backtest(
     )
     if log_run:
         from .registry import log as log_run_to_registry
-        rec = log_run_to_registry(result, study=study, notes=notes)
+        rec = log_run_to_registry(result, study=study, notes=notes, curve=log_curve)
         if rec is not None:
             result.config["run_id"] = rec.run_id
             result.config["fingerprint"] = rec.fingerprint

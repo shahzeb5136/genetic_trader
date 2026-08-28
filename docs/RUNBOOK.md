@@ -1,7 +1,7 @@
 # Runbook
 
-Operating the data layer, the backtest engine and the experiment registry: routine
-tasks, troubleshooting, and the paid-data migration.
+Operating the data layer, the backtest engine, the experiment registry and the
+reports: routine tasks, troubleshooting, and the paid-data migration.
 
 ---
 
@@ -323,6 +323,54 @@ starts a new line and `load()` skips the broken one. Only that single record is 
 re-derive what you tried: a discarded idea leaves no trace in git, in the results
 directory, or anywhere else. Losing the log does not lose a result, it loses the ability
 to know whether any result was real.
+
+---
+
+## Reports
+
+Full narrative in `docs/REPORTS.md`.
+
+```bash
+python -m sp500lab report study baselines --open
+```
+
+```bash
+python -m sp500lab report run --study baselines
+```
+
+```bash
+python -m sp500lab report registry
+```
+
+```bash
+python -m sp500lab report compare momentum_12_1 low_vol equal_weight
+```
+
+```bash
+python -m sp500lab report honesty
+```
+
+Output goes to `reports/` (gitignored). `-o path.html` overrides the destination,
+`--open` launches a browser. Each file is self-contained: no server, no network, 15-100 KB.
+
+### Troubleshooting
+
+**"no runs logged"** - nothing has been run, or `SP500LAB_REGISTRY` is off in your shell.
+
+**A run is in the tables but not the charts** - it has no stored equity curve. Curves are
+written with every run by default; a run logged with `log_curve=False` (as a large search
+should) needs re-running to recover one. The fingerprint is unchanged, so that re-run is
+the same trial, not a new one.
+
+**The report looks stale** - it is a snapshot. The footer carries the generation time.
+Rebuild after new runs; it takes under a second.
+
+**A drawdown chart looks too shallow** - it is. Charts are drawn from month-end curves, so
+an intra-month trough is invisible. The `maxDD` column comes from the daily curve and is
+the number to quote.
+
+**`cash` is highlighted as best in several columns** - correct, if uninteresting. Holding
+nothing genuinely has the lowest volatility, turnover, cost and drawdown.
 
 ---
 

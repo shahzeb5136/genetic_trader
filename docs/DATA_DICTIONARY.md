@@ -295,6 +295,19 @@ entry means the holdout is worth a little less as an independent check.
 
 ---
 
+### `data/experiments/curves.jsonl`
+Month-end equity curves, one line per run, keyed by `run_id`. Split out from `runs.jsonl`
+so the searchable index stays small (ADR-027).
+
+`run_id`, `strategy`, `study`, `freq`, `dates[]`, `nav[]`, and `nav_gross[]` /
+`benchmark[]` where they exist. All series are rebased to 1.0 and rounded to six decimals.
+
+⚠️ **Month-end, not daily.** A daily curve costs ~30 KB per run (~300 MB for a
+10,000-individual GA run); month-end costs ~7 KB. The strategy only trades at month ends,
+so that is where the information is. Read with `registry.load_curves()`.
+
+---
+
 ### `gold/backtest/panel/*.npz`
 Cached numpy panel, keyed by a hash of the build parameters. Not a parquet table and not
 registered in DuckDB. Disposable — delete it and `build_panel()` rebuilds in ~11s.

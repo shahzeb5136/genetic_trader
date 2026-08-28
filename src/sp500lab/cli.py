@@ -204,6 +204,10 @@ research discipline (docs/EXPERIMENTS.md):
   python -m sp500lab experiments studies        # what you have tried
   python -m sp500lab experiments deflate NAME   # does the winner survive the search?
   python -m sp500lab experiments holdout        # every look at the reserved period
+
+visualise it (docs/REPORTS.md):
+  python -m sp500lab report study baselines --open
+  python -m sp500lab report registry
 """)
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = p.add_subparsers(dest="command", required=True)
@@ -237,8 +241,10 @@ research discipline (docs/EXPERIMENTS.md):
                    ).set_defaults(func=cmd_status)
 
     from .backtest.cli import add_experiments_parser, add_parser as add_backtest_parser
+    from .reporting.cli import add_parser as add_report_parser
     add_backtest_parser(sub)
     add_experiments_parser(sub)
+    add_report_parser(sub)
 
     s = sub.add_parser("query", help="run SQL against the parquet lake")
     s.add_argument("sql", nargs="?", help="SQL to execute")
