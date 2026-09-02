@@ -38,7 +38,6 @@ See docs/FORWARD_TEST.md, ADR-033 and ADR-034.
 from __future__ import annotations
 
 import math
-import time
 
 import pandas as pd
 
@@ -47,10 +46,28 @@ from ..forward.compare import compare
 from ..forward.windows import describe_power, sharpe_band
 from . import series as S
 from . import theme
-from .specs import (AreaChart, BarChart, Download, Heatmap, LineChart, LinkCard,
-                    LinkGrid, Note, Report, ScatterChart, Section, Stat, StatRow,
-                    TableBlock)
+from .specs import (
+    AreaChart,
+    BarChart,
+    Download,
+    Heatmap,
+    LineChart,
+    LinkCard,
+    LinkGrid,
+    Note,
+    Report,
+    ScatterChart,
+    Section,
+    Stat,
+    StatRow,
+    TableBlock,
+)
 from .tables import Cell, Table
+from .util import finite as _finite
+from .util import gt as _gt
+from .util import lt as _lt
+from .util import now as _now
+from .util import slugify
 
 BENCHMARK_LABEL = "SPY"
 
@@ -69,10 +86,6 @@ VERDICT_ORDER = ("failed", "decayed", "held", "inconclusive")
 #: opens pleasantly. Lower here because a forward window is 54 months, so a ledger that
 #: overflows this is a strategy holding several hundred names.
 MAX_EMBEDDED_TRADES = 20_000
-
-
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
 
 
 # --------------------------------------------------------------------------
@@ -307,28 +320,6 @@ def _num_cell(value, fmt, *, emphasis: str = "", title: str = "") -> Cell:
         return Cell(fmt(float(value)), float(value), emphasis, title)
     except (TypeError, ValueError):
         return Cell(str(value), str(value), emphasis, title)
-
-
-def _finite(x) -> bool:
-    try:
-        return math.isfinite(float(x))
-    except (TypeError, ValueError):
-        return False
-
-
-def _gt(x, threshold: float) -> bool:
-    return _finite(x) and float(x) > threshold
-
-
-def _lt(x, threshold: float) -> bool:
-    return _finite(x) and float(x) < threshold
-
-
-def slugify(text: str) -> str:
-    out = "".join(c.lower() if c.isalnum() else "-" for c in str(text))
-    while "--" in out:
-        out = out.replace("--", "-")
-    return out.strip("-") or "report"
 
 
 def strategy_href(name: str) -> str:

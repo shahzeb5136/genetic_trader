@@ -25,7 +25,7 @@ change which series is which.
 
 from __future__ import annotations
 
-import math
+from .util import finite as _finite
 
 # --------------------------------------------------------------------------
 # Palette
@@ -112,13 +112,6 @@ def multiple(value: float | None, dp: int = 2) -> str:
     if value is None or not _finite(value):
         return "—"
     return f"{value:.{dp}f}x"
-
-
-def _finite(x: float) -> bool:
-    try:
-        return math.isfinite(float(x))
-    except (TypeError, ValueError):
-        return False
 
 
 # --------------------------------------------------------------------------

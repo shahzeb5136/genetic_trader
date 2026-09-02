@@ -25,6 +25,7 @@ import webbrowser
 from pathlib import Path
 
 from ..paths import REPORTS_DIR
+from .util import slugify
 
 
 def add_parser(sub) -> None:
@@ -172,7 +173,7 @@ def cmd_study(args) -> int:
     report = comparison_report(
         runs, title=f"Study: {args.study}",
         subtitle=f"{len(runs)} run(s), {runs['fingerprint'].nunique()} distinct trial(s).")
-    return _write(report, args, f"study-{_slug(args.study)}")
+    return _write(report, args, f"study-{slugify(args.study)}")
 
 
 def cmd_run(args) -> int:
@@ -253,7 +254,7 @@ def cmd_trades(args) -> int:
                           log_run=not args.no_log, record_trades=True)
     print(f"  {len(result.trades):,} orders over "
           f"{result.config['start']}..{result.config['end']}")
-    return _write(trades_report(result), args, f"trades-{_slug(args.strategy)}")
+    return _write(trades_report(result), args, f"trades-{slugify(args.strategy)}")
 
 
 def cmd_honesty(args) -> int:
@@ -280,9 +281,13 @@ def cmd_forward(args) -> int:
     report has to be rebuildable years later from the record alone.
     """
     from ..forward import store
-    from . import (forward_decay_report, forward_honesty_report, forward_index_report,
-                   forward_strategy_report)
-    from .forward_views import PRIMARY_COSTS, primary_rows, slugify, strategy_href
+    from . import (
+        forward_decay_report,
+        forward_honesty_report,
+        forward_index_report,
+        forward_strategy_report,
+    )
+    from .forward_views import PRIMARY_COSTS, primary_rows, strategy_href
     from .render.html import write as write_html
     from .render.markdown import write as write_md
 
@@ -397,7 +402,6 @@ def _forward_data_exports(records, data_dir) -> list:
 
 def _forward_readme(records, rows, cost_model: str, out_dir):
     """A guide to the folder, generated from what is actually in it."""
-    from .forward_views import slugify
 
     counts = rows["verdict"].value_counts().to_dict()
     lines = [
@@ -548,13 +552,6 @@ def _no_runs(where: str) -> int:
     return 1
 
 
-def _slug(text: str) -> str:
-    out = "".join(c.lower() if c.isalnum() else "-" for c in str(text))
-    while "--" in out:
-        out = out.replace("--", "-")
-    return out.strip("-") or "report"
-
-
 # --------------------------------------------------------------------------
 # The report set: one page per strategy, one for the features, one index
 # --------------------------------------------------------------------------
@@ -568,7 +565,7 @@ def cmd_strategy(args) -> int:
     print(f"  {result.strategy}: CAGR {result.performance.cagr * 100:.2f}%  "
           f"Sharpe {result.performance.sharpe:.2f}  "
           f"{len(result.trades):,} orders")
-    return _write(report, args, f"strategy-{_slug(args.strategy)}")
+    return _write(report, args, f"strategy-{slugify(args.strategy)}")
 
 
 def cmd_all(args) -> int:
@@ -608,10 +605,10 @@ def cmd_all(args) -> int:
         except Exception as exc:                                  # noqa: BLE001
             failed.append(f"{name}: {exc}")
             continue
-        href = f"strategy-{_slug(name)}.html"
+        href = f"strategy-{slugify(name)}.html"
         # The complete ledger always lands beside the page, whatever the page embeds.
         # A capped download is a convenience; losing orders is not acceptable.
-        csv_href = f"trades/{_slug(name)}.csv"
+        csv_href = f"trades/{slugify(name)}.csv"
         (out_dir / "trades").mkdir(exist_ok=True)
         result.trades.to_csv(out_dir / csv_href, index=False)
         page = write_html(strategy_report(result, results_by_cost=others,
@@ -1031,7 +1028,7 @@ def _monthly_entries(df, window_cache, forward, curves_wanted):
                                    str(real["end"])),
                 deflation=_deflation_from(df, real),
                 forward=forward.get(name),
-                href=f"strategy-{_slug(name)}.html",
+                href=f"strategy-{slugify(name)}.html",
             )
             curves_wanted[name] = real.get("run_id")
             entries.append(entry)

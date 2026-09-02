@@ -21,6 +21,7 @@ from typing import Union
 
 from .series import LineSeries, Point
 from .tables import Table
+from .util import slugify
 
 #: How a renderer should format an axis or a value. Named rather than a format string so
 #: the renderer keeps control of precision (see theme.py).
@@ -183,7 +184,7 @@ class Section:
 
     def __post_init__(self) -> None:
         if not self.anchor:
-            self.anchor = _slug(self.title)
+            self.anchor = slugify(self.title, "section")
 
     def add(self, block: Block | None) -> "Section":
         """Append, ignoring None so a view can skip a block without an if around it."""
@@ -213,8 +214,3 @@ class Report:
         return next((s for s in self.sections if s.title == title), None)
 
 
-def _slug(text: str) -> str:
-    out = "".join(c.lower() if c.isalnum() else "-" for c in text)
-    while "--" in out:
-        out = out.replace("--", "-")
-    return out.strip("-") or "section"

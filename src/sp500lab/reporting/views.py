@@ -26,8 +26,6 @@ sits next to the scoreboard rather than behind a link.
 
 from __future__ import annotations
 
-import time
-
 import numpy as np
 import pandas as pd
 
@@ -35,9 +33,27 @@ from ..backtest import registry
 from . import series as S
 from . import tables as T
 from . import theme
-from .specs import (AreaChart, BarChart, Download, Heatmap, LineChart, LinkCard,
-                    LinkGrid, Note, Report, ScatterChart, Section, Stat, StatRow,
-                    TableBlock)
+from .specs import (
+    AreaChart,
+    BarChart,
+    Download,
+    Heatmap,
+    LineChart,
+    LinkCard,
+    LinkGrid,
+    Note,
+    Report,
+    ScatterChart,
+    Section,
+    Stat,
+    StatRow,
+    TableBlock,
+)
+from .util import gt as _gt
+from .util import lt as _lt
+from .util import now as _now
+from .util import pos as _pos
+from .util import slugify
 
 #: Largest trade ledger embedded in a report, in rows AND in bytes of CSV. Whichever
 #: binds first wins. base64 inflates a file by a third, and a 90,000-order equal-weight
@@ -58,10 +74,6 @@ BENCHMARK_LABEL = "SPY"
 # --------------------------------------------------------------------------
 # Shared pieces
 # --------------------------------------------------------------------------
-
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
-
 
 def _curves_for(runs: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Series | None]:
     """{label: nav curve} plus one benchmark, from stored month-end curves.
@@ -475,24 +487,6 @@ def _holdout_section() -> Section:
 
 # --------------------------------------------------------------------------
 
-def _pos(x) -> bool:
-    return _gt(x, 0.0)
-
-
-def _gt(x, threshold: float) -> bool:
-    try:
-        return float(x) > threshold
-    except (TypeError, ValueError):
-        return False
-
-
-def _lt(x, threshold: float) -> bool:
-    try:
-        return float(x) < threshold
-    except (TypeError, ValueError):
-        return False
-
-
 # --------------------------------------------------------------------------
 # Trades - the evidence for the curve
 # --------------------------------------------------------------------------
@@ -567,7 +561,7 @@ def trades_report(result, *, reconciliation: dict | None = None) -> Report:
 
 def _trades_download(result, trades, full_csv_href: str | None = None) -> Download:
     """The whole ledger if it fits, a recent slice if it does not - and say which."""
-    slug = _slugify(result.strategy)
+    slug = slugify(result.strategy)
     csv = trades.to_csv(index=False)
     if len(trades) <= MAX_EMBEDDED_TRADES and len(csv) <= MAX_EMBEDDED_BYTES:
         return Download(
@@ -601,13 +595,6 @@ def _audit_note(audit: dict) -> Note:
     return Note("The orders do NOT add up to the equity curve. One of the two is wrong "
                 "and neither should be quoted until it is resolved.",
                 level="danger", title="Reconciliation failed.")
-
-
-def _slugify(text: str) -> str:
-    out = "".join(c.lower() if c.isalnum() else "-" for c in str(text))
-    while "--" in out:
-        out = out.replace("--", "-")
-    return out.strip("-") or "strategy"
 
 
 # --------------------------------------------------------------------------

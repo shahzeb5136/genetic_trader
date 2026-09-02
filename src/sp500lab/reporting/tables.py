@@ -28,6 +28,8 @@ from typing import Any, Callable
 import pandas as pd
 
 from . import theme
+from .util import gt as _gt
+from .util import lt as _lt
 
 
 @dataclass
@@ -310,20 +312,6 @@ def coverage_note(record: pd.Series) -> str:
     return (f"At its worst rebalance this run could trade {theme.pct(lo, 1)} of the "
             "index. The names it could not trade are disproportionately the ones that "
             "later delisted, so the tradable subset is biased toward survivors.")
-
-
-def _lt(value: Any, threshold: float) -> bool:
-    try:
-        return float(value) < threshold
-    except (TypeError, ValueError):
-        return False
-
-
-def _gt(value: Any, threshold: float) -> bool:
-    try:
-        return float(value) > threshold
-    except (TypeError, ValueError):
-        return False
 
 
 def trade_years(df: pd.DataFrame) -> Table:
