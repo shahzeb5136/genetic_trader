@@ -34,8 +34,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..backtest.context import Context
-from ..backtest.portfolio import Construction
-from ..backtest.strategy import SignalStrategy, register
+from ..backtest.portfolio import Construction, build_weights
+from ..backtest.strategy import FeatureStrategy, SignalStrategy, register
+from .genome import (DEAD_ZONE, PRESET_MIN_DATE, PRESETS, REGIME_FEATURES,
+                     alpha_genome, describe_genome)
+from .signals import rank_pct
 
 
 @dataclass(frozen=True)
@@ -224,3 +227,177 @@ def fitness(result, turnover_penalty: float = 0.0) -> float:
     if turnover_penalty and p.ann_turnover:
         score -= turnover_penalty * float(p.ann_turnover)
     return score
+
+
+# --------------------------------------------------------------------------
+# EvolvedAlpha - the genome the genetic algorithm actually searches
+# --------------------------------------------------------------------------
+
+@register("evolved_alpha")
+class EvolvedAlpha(FeatureStrategy):
+    """A weighted blend of ranked FEATURES, entirely determined by its genome.
+
+    The successor to `EvolvedBlend` above, and the difference is where the numbers come
+    from. `EvolvedBlend` recomputes four indicators inside every `score()` call, which is
+    fine for four and fatal for twenty: a 10,000-individual search would spend most of
+    its time recomputing the same rolling regressions. This reads the shared feature
+    panel, so a fitness evaluation is a gather and a dot product.
+
+        score = sum_k  w_k * percentile_rank(feature_k)
+
+    Percentile rank rather than z-score, because cross-sectional fundamental data has
+    tails that are not merely fat but wrong (see signals.py). Weights inside the dead
+    zone contribute exactly nothing, so "how many features does this use" has an answer
+    and parsimony pressure has something to grip.
+
+    The regime gate is the only non-linearity: when it is on and the market is below its
+    200-day average or realised volatility is far above its own year, the strategy holds
+    the low-volatility end of its own score and invests only `defensive_gross` of the
+    account. Under a long-only mandate, cash is the only defensive asset there is.
+
+    Instantiate from a vector:
+
+        g = alpha_genome("price")
+        EvolvedAlpha(preset="price", **g.decode(vector))
+    """
+
+    name = "evolved_alpha"
+
+    #: Suffix on a pre-ranked feature column. See features/ranked.py.
+    RANK_SUFFIX = "__rank"
+
+    def __init__(self, preset: str = "price", pre_ranked: bool = False, **params):
+        genome = alpha_genome(preset)
+        defaults = genome.decode(np.zeros(len(genome)))
+        merged = {**defaults, **{k: v for k, v in params.items()
+                                 if k in set(genome.names)}}
+        decoded = genome.decode(genome.encode(merged))
+        super().__init__(preset=preset, **decoded)
+
+        self._genome = genome
+        self._features = tuple(PRESETS[preset])
+        self._weights = np.array(
+            [self.params[f"w_{f}"] for f in self._features], dtype=np.float64)
+        # The dead zone is applied ONCE, here, rather than inside score(). Otherwise
+        # every rebalance re-derives the same mask 232 times per fitness evaluation.
+        self._weights[np.abs(self._weights) < DEAD_ZONE] = 0.0
+        self._used = np.flatnonzero(self._weights != 0.0)
+
+        # Pre-ranked columns carry a different NAME, not just different values, so a
+        # strategy handed the wrong panel fails at the first rebalance instead of
+        # quietly summing raw book-to-market ratios as if they were ranks.
+        self.pre_ranked = bool(pre_ranked)
+        self._columns = tuple(f"{f}{self.RANK_SUFFIX}" if self.pre_ranked else f
+                              for f in self._features)
+        self._defensive_column = ("vol_126d" + self.RANK_SUFFIX if self.pre_ranked
+                                  else "vol_126d")
+        needed = list(self._columns) + list(REGIME_FEATURES) + [self._defensive_column]
+        # Deduplicated while preserving order: the defensive sleeve ranks volatility,
+        # which is usually already one of the scored columns.
+        self.requires_features = tuple(dict.fromkeys(needed))
+        # Feature name -> column, resolved once on the first scoring call. `ctx.feature`
+        # does a linear scan of 75 names, and a fitness evaluation asks for twelve of
+        # them at each of 232 rebalances.
+        self._cols: dict[str, int] | None = None
+        self.min_date = PRESET_MIN_DATE[preset]
+        self.construction = Construction(
+            top_k=int(self.params["top_k"]),
+            weighting=str(self.params["weighting"]),
+            max_weight=float(self.params["max_weight"]),
+            min_names=10)
+
+    # ------------------------------------------------------------- behaviour
+
+    @property
+    def active_features(self) -> list[str]:
+        return [self._features[i] for i in self._used]
+
+    def _col(self, ctx: Context, name: str) -> np.ndarray:
+        if self._cols is None:
+            self._cols = {n: i for i, n in enumerate(ctx.feature_names)}
+        return ctx.features[:, self._cols[name]]
+
+    def _macro(self, ctx: Context, name: str) -> float:
+        """A macro feature's single value for this date.
+
+        Macro columns are one number broadcast across every security, so the first
+        finite entry IS the value. `np.nanmedian` would give the same answer, scan the
+        whole cross-section to do it, and emit an all-NaN warning 232 times per run in
+        the early years where the series does not exist yet.
+        """
+        col = self._col(ctx, name)
+        finite = col[np.isfinite(col)]
+        return float(finite[0]) if finite.size else float("nan")
+
+    def is_defensive(self, ctx: Context) -> bool:
+        if self.params["use_regime"] != "on":
+            return False
+        trend = self._macro(ctx, "mkt_trend_200d")
+        ratio = self._macro(ctx, "mkt_vol_ratio")
+        return ((np.isfinite(trend) and trend < 0.0)
+                or (np.isfinite(ratio) and ratio > float(self.params["vol_trigger"])))
+
+    def score(self, ctx: Context) -> np.ndarray:
+        elig = ctx.tradable
+        n = ctx.close.shape[1]
+        if not len(self._used) or elig.sum() < 10:
+            # An individual with every weight inside the dead zone has no opinion about
+            # anything. It scores NaN and holds cash, rather than falling through to the
+            # tie-break and collecting the survivors - which is exactly the failure that
+            # made a zero-signal strategy post 17.65%/yr in ADR-024.
+            return np.full(n, np.nan)
+
+        if self.is_defensive(ctx):
+            # Defensive months rank on low volatility rather than on the evolved score.
+            # The score is what the individual believes; this is what it does when it
+            # does not want to act on that belief.
+            vol = self._col(ctx, self._defensive_column)
+            # Ranks are a monotone transform, so ranking a rank is the identity - the
+            # negation still has to happen, because low volatility is the good end.
+            return rank_pct(-vol, elig) if not self.pre_ranked else np.where(
+                elig & np.isfinite(vol), 1.0 - vol, np.nan)
+
+        total = np.zeros(n, dtype=np.float64)
+        present = np.zeros(n, dtype=np.float64)
+        for i in self._used:
+            w = self._weights[i]
+            col = self._col(ctx, self._columns[i])
+            r = col if self.pre_ranked else rank_pct(col, elig)
+            ok = np.isfinite(r) & elig
+            total[ok] += w * r[ok]
+            present[ok] += abs(w)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = total / present
+        return np.where((present > 0) & np.isfinite(out), out, np.nan)
+
+    def target_weights(self, ctx: Context) -> np.ndarray:
+        from dataclasses import replace
+        c = self.construction
+        if self.is_defensive(ctx):
+            c = replace(c, gross=float(self.params["defensive_gross"]))
+        s = np.asarray(self.score(ctx), dtype=np.float64)
+        vol = (self.vol_for_weighting(ctx) if c.weighting == "inverse_vol" else None)
+        return build_weights(s, self.eligible(ctx), c, tiebreak=ctx.tiebreak, vol=vol)
+
+    def describe(self) -> dict:
+        d = super().describe()
+        d["preset"] = self.params["preset"]
+        # Deliberately NOT in `params`: pre-ranking is an execution detail that produces
+        # identical weights either way, and putting it in the fingerprint would make the
+        # same hypothesis count as two trials and over-deflate the winner.
+        d["pre_ranked"] = self.pre_ranked
+        d["active_features"] = self.active_features
+        d["n_active"] = len(self._used)
+        return d
+
+    def explain(self) -> str:
+        """The individual in sentences. See genome.describe_genome."""
+        return describe_genome(self._genome, self._genome.encode(self.params))
+
+
+def from_vector(vector, preset: str = "price",
+                pre_ranked: bool = False) -> EvolvedAlpha:
+    """The GA's constructor: a float vector in, a scorable strategy out."""
+    genome = alpha_genome(preset)
+    return EvolvedAlpha(preset=preset, pre_ranked=pre_ranked,
+                        **genome.decode(vector))
