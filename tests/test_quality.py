@@ -18,7 +18,6 @@ import pytest
 from sp500lab.quality import checks as Q
 from sp500lab.quality.checks import ERROR, INFO, WARN
 
-
 # --------------------------------------------------------------------- fixtures
 
 def _bars(n=30, ticker="AAA", sid="SID1", start="2020-01-01", close=None, **cols):

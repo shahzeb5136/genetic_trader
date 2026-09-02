@@ -64,6 +64,29 @@ SERIES = {
 }
 
 
+def parse_fred_csv(text: str, series: str, description: str, revised: bool) -> pd.DataFrame:
+    """One `fredgraph.csv` payload -> the silver row shape.
+
+    FRED marks a missing observation with a literal '.', which pandas would otherwise
+    read as text and turn the whole column into strings. A row whose date will not
+    parse is dropped; a row whose value will not parse keeps its date with a NaN value,
+    because "no print that day" is information (holiday, suspended series) and a
+    consumer that forward-fills needs the row to be there.
+    """
+    df = pd.read_csv(io.StringIO(text))
+    if df.shape[1] < 2:
+        raise ValueError(f"{series}: expected a two-column CSV, got {list(df.columns)}")
+    date_col, val_col = df.columns[0], df.columns[1]
+    df = df.rename(columns={date_col: "date", val_col: "value"})
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["value"] = pd.to_numeric(df["value"].replace(".", pd.NA), errors="coerce")
+    df = df.dropna(subset=["date"])
+    df["series_id"] = series
+    df["description"] = description
+    df["revised"] = revised
+    return df[["series_id", "date", "value", "description", "revised"]].reset_index(drop=True)
+
+
 def run(force: bool = False) -> IngestResult:
     res = IngestResult(source=SOURCE, dataset=DATASET)
     ingest_date = today_iso()
@@ -85,18 +108,10 @@ def run(force: bool = False) -> IngestResult:
                      extra={"description": desc, "revised": revised})
         res.bronze_files += 1
 
-        df = pd.read_csv(io.StringIO(resp.text()))
-        date_col = df.columns[0]
-        val_col = df.columns[1]
-        df = df.rename(columns={date_col: "date", val_col: "value"})
-        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        # FRED marks missing observations with '.'
-        df["value"] = pd.to_numeric(df["value"].replace(".", pd.NA), errors="coerce")
-        df = df.dropna(subset=["date"])
-        df["series_id"] = series
-        df["description"] = desc
-        df["revised"] = revised
-        frames.append(df[["series_id", "date", "value", "description", "revised"]])
+        try:
+            frames.append(parse_fred_csv(resp.text(), series, desc, revised))
+        except Exception as exc:  # noqa: BLE001
+            res.errors.append(f"{series}: parse: {exc}"[:160])
 
     if not frames:
         res.errors.append("no series downloaded")

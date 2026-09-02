@@ -35,43 +35,54 @@ def _view_name(path: Path, root: Path) -> str:
     return parts[-1] if parts else path.stem
 
 
-def connect(read_only: bool = True) -> duckdb.DuckDBPyConnection:
-    """In-memory DuckDB with a view per dataset. Cheap - call it freely."""
-    con = duckdb.connect(":memory:")
-    registered: dict[str, Path] = {}
+def dataset_views() -> list[tuple[str, Path, Path]]:
+    """(view_name, parquet_path, layer_root) for every dataset, in registration order.
 
+    The ONE place a view name is decided. `connect()` registers these names and
+    `list_views()` reports them, so what `status` prints is always what SQL accepts.
+    A leaf-name collision (two datasets both called `data_quality`) keeps the bare
+    name for the first and qualifies the second with its folder path.
+    """
+    out: list[tuple[str, Path, Path]] = []
+    taken: set[str] = set()
     for root, prefix in ((SILVER_DIR, ""), (GOLD_DIR, "gold_")):
         if not root.exists():
             continue
         for pq in sorted(root.rglob("*.parquet")):
             name = prefix + _view_name(pq, root)
-            if name in registered:  # collision: qualify with parent folder
+            if name in taken:  # collision: qualify with the full parent folder
                 name = prefix + "_".join(pq.parent.relative_to(root).parts)
-            con.execute(
-                f'CREATE OR REPLACE VIEW "{name}" AS '
-                f"SELECT * FROM read_parquet('{pq.as_posix()}')")
-            registered[name] = pq
+            taken.add(name)
+            out.append((name, pq, root))
+    return out
 
-    log.debug("registered %d views", len(registered))
+
+def connect(read_only: bool = True) -> duckdb.DuckDBPyConnection:
+    """In-memory DuckDB with a view per dataset. Cheap - call it freely."""
+    con = duckdb.connect(":memory:")
+    views = dataset_views()
+    for name, pq, _ in views:
+        con.execute(
+            f'CREATE OR REPLACE VIEW "{name}" AS '
+            f"SELECT * FROM read_parquet('{pq.as_posix()}')")
+    log.debug("registered %d views", len(views))
     return con
 
 
 def list_views() -> pd.DataFrame:
     """Every queryable dataset with row count and on-disk size."""
     rows = []
-    for root, prefix in ((SILVER_DIR, ""), (GOLD_DIR, "gold_")):
-        if not root.exists():
-            continue
-        for pq in sorted(root.rglob("*.parquet")):
-            name = prefix + _view_name(pq, root)
-            try:
-                n = duckdb.sql(
-                    f"SELECT count(*) FROM read_parquet('{pq.as_posix()}')").fetchone()[0]
-            except Exception:  # noqa: BLE001
-                n = -1
-            rows.append({"view": name, "rows": n,
-                         "mb": round(pq.stat().st_size / 1e6, 2),
-                         "path": str(pq.relative_to(root.parent))})
+    for name, pq, root in dataset_views():
+        try:
+            n = duckdb.sql(
+                f"SELECT count(*) FROM read_parquet('{pq.as_posix()}')").fetchone()[0]
+        except Exception:  # noqa: BLE001
+            n = -1
+        rows.append({"view": name, "rows": n,
+                     "mb": round(pq.stat().st_size / 1e6, 2),
+                     "path": str(pq.relative_to(root.parent))})
+    if not rows:
+        return pd.DataFrame(columns=["view", "rows", "mb", "path"])
     return pd.DataFrame(rows).sort_values("view").reset_index(drop=True)
 
 

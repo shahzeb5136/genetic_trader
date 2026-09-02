@@ -55,6 +55,32 @@ BENCHMARKS = {
 CALENDAR_SOURCE = "SPY"
 
 
+def derive_calendar(session_dates: list[str]) -> pd.DataFrame:
+    """The trading calendar, from the dates one always-trading instrument printed on.
+
+    `is_month_end` (and quarter, year) is true on the LAST session of the period, not
+    on the calendar month-end - the 31st is a Sunday often enough that this matters.
+    The final row compares against NaT and comes out True, which is correct: the most
+    recent session is the latest we have for its month, quarter and year.
+    """
+    dates = sorted({str(d) for d in session_dates})
+    if not dates:
+        raise ValueError("cannot derive a calendar from no sessions")
+    cal = pd.DataFrame({"date": dates})
+    dt = pd.to_datetime(cal["date"])
+    if dt.isna().any():
+        raise ValueError("unparseable session dates")
+    cal["year"] = dt.dt.year
+    cal["month"] = dt.dt.month
+    cal["day_of_week"] = dt.dt.dayofweek
+    cal["is_month_end"] = dt.dt.to_period("M") != dt.shift(-1).dt.to_period("M")
+    cal["is_quarter_end"] = dt.dt.to_period("Q") != dt.shift(-1).dt.to_period("Q")
+    cal["is_year_end"] = dt.dt.year != dt.shift(-1).dt.year
+    cal["session_index"] = range(len(cal))
+    cal["calendar_source"] = CALENDAR_SOURCE
+    return cal
+
+
 def run(force: bool = False, start: str | None = None) -> IngestResult:
     import yfinance as yf
 
@@ -91,18 +117,7 @@ def run(force: bool = False, start: str | None = None) -> IngestResult:
         res.errors.append(f"{CALENDAR_SOURCE} missing - cannot derive trading calendar")
         return res
 
-    cal = pd.DataFrame({"date": cal_dates})
-    dt = pd.to_datetime(cal["date"])
-    cal["year"] = dt.dt.year
-    cal["month"] = dt.dt.month
-    cal["day_of_week"] = dt.dt.dayofweek
-    cal["is_month_end"] = dt.dt.to_period("M") != dt.shift(-1).dt.to_period("M")
-    cal["is_quarter_end"] = dt.dt.to_period("Q") != dt.shift(-1).dt.to_period("Q")
-    cal["is_year_end"] = dt.dt.year != dt.shift(-1).dt.year
-    cal["session_index"] = range(len(cal))
-    cal["calendar_source"] = CALENDAR_SOURCE
-    # Last row's shift is NaT -> comparison yields True, which is correct: the most
-    # recent session is the latest we have for its month/quarter/year.
+    cal = derive_calendar(cal_dates)
     write_silver(cal, "reference/trading_calendar")
 
     per_year = cal.groupby("year").size()
