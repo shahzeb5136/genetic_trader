@@ -887,3 +887,583 @@ misled its reader.
 **Consequence.** `reports/` is gitignored - a report rebuilds from the registry in under a
 second, and a 100 KB file per run would bloat the repo. The registry is the artifact worth
 backing up; the report is a view of it.
+
+---
+
+## ADR-029 — Every order is written down, and unfilled orders are not charged
+
+**Status:** accepted (2026-08-28)
+
+**Decision.** `run_backtest` records an order-by-order ledger by default
+(`result.trades`), carrying the AS-TRADED price and real share count alongside the
+adjusted figures the accounting used. `sp500lab backtest trades <strategy>` exports it as
+CSV together with the month-by-month holdings, and prints a reconciliation.
+
+**Why.** An equity curve is a claim; a list of orders is the evidence for it. Somebody who
+does not trust this engine cannot check a CAGR — there is nothing in it to check. They can
+check "on 2007-05-01 this bought 20.06 shares of AAPL at $99.59", because that is a fact
+about the world. Every other honesty mechanism in this repo makes a *failure mode* visible;
+this one makes the *result* checkable by a third party, which is a different and stronger
+property.
+
+**Why two prices per row.** `price` is `raw_open x cum_split` — what a broker printed that
+morning. `adj_price` is the total-return-adjusted number the NAV was computed from. Handing
+an outside reader only the adjusted price guarantees a mismatch against any quote site that
+means nothing; handing them only the as-traded price makes the ledger unreconcilable
+against the curve. Verified against the source bars: APH on 2018-02-01 prints $91.40 where
+the stored split-adjusted close is $22.85 (two later 2:1 splits), and HON prints $159.00
+against $150.64 (the 2018 spin-offs). Both match the historical record.
+
+**The identity that makes it an audit.** For every rebalance,
+`cash_after = cash_before + sum(cash_flow)`, where `cash_flow` is net of the commission and
+spread charged to that order. `trades.reconcile()` replays it against the run's own cash
+column and reports the worst gap. Measured across all baselines and all twelve alpha
+strategies: **0.0**.
+
+**Two things this immediately exposed.**
+
+*Costs charged to orders that did not exist.* Dropping sub-cent "dust" orders from the
+ledger broke the cash identity by $1.26 on `equal_weight` — real money charged against
+orders nobody could see. Every order the cost model prices now gets a row, however small,
+because a cost with no order attached to it is exactly the failure this is meant to rule
+out.
+
+*Commission on unfilled orders.* Costs were priced before the fill check, so an order for a
+name with no opening bar was charged a commission it never paid. The engine now resolves
+fillability first. The effect on published numbers is under 0.01 basis points — the point
+is not the magnitude, it is that the ledger made a wrong thing visible in an afternoon.
+
+**Also corrected here.** `_as_traded_price` used the execution day's *close* to derive
+share counts for the per-share commission; it now uses the *open*, which is the bar orders
+actually fill in and the same price the ledger prints. Measured impact on `momentum_12_1`,
+`equal_weight` and `low_vol`: **under 0.005 basis points of CAGR** — the $1 per-order
+minimum dominates the per-share rate at this capital scale (ADR-016). One price, one story.
+
+**Cost.** About 12,000 rows for a 50-name strategy over 232 rebalances. Recording is on by
+default for ordinary runs and off inside the genetic algorithm; re-running a winner with it
+on is the *same trial*, since the fingerprint does not include it.
+
+---
+
+## ADR-030 — A versioned feature layer, and a leakage test that can fail
+
+**Status:** accepted (2026-08-28) — this is TODO-4
+
+**Decision.** `data/gold/features/` holds an `(R, S, F)` float32 cube of 75 point-in-time
+features on the month-end rebalance grid, built once and consumed by every strategy through
+`ctx.feature(name)`. `sp500lab features check` rebuilds the whole matrix from a panel that
+physically ends at a past date, with every filing published after that date deleted, and
+asserts the earlier rows are **bit-identical**.
+
+**Why one shared layer.** The stated goal is a competition between genetic algorithms,
+neural nets and classical rules. If each competitor computes its own momentum, the
+competition partly measures who wrote better feature code. It is also a hard performance
+requirement for the GA: a fitness evaluation must never recompute a rolling regression.
+
+**Why the month-end grid and not every session.** A daily grid of 75 features over 628
+securities is 590 MB; the month-end grid is 17 MB. Nothing in a monthly-rebalanced strategy
+can use the rows in between, and `at()` refuses a row it does not hold rather than
+interpolating one — a silently interpolated feature is a lookahead bug wearing a
+convenience API.
+
+**The leakage test is the whole argument.** Two mechanisms fail differently: a price
+feature can have a forward-looking window, and a fundamental can be joined on `period_end`
+instead of `filed_date`. Truncating the panel catches the first; deleting later filings
+catches the second. All 75 features currently pass bit-identically at a 2016-12-30 cut.
+
+**Two bugs it caught, both silent.**
+
+*The as-of join collapsed a decade into one key.* Dates were converted to integers by
+dividing the int64 view by 86.4e12, which assumes nanosecond resolution. pandas 2.x parses
+these strings to `datetime64[us]`, so every date in the dataset mapped onto one of about
+twenty integers and `merge_asof` matched filings almost at random. Nothing raised;
+fundamental coverage was 1.5% instead of 75% and would have read as "XBRL is sparse".
+
+*The split basis belongs to the filing, not to today.* Reported shares are in the share
+basis of the filing that carried them, so `market_cap(t) = shares × cum_split(filed) ×
+raw_close(t)`; `cum_split(t)` cancels out of the algebra entirely. Using the as-of ratio
+instead is correct except across a split between the filing and now — a window of at most
+one quarter, in which the error is the whole split ratio. Apple's 4:1 in August 2020 would
+have quartered it for a quarter, and the fix makes the series continuous across it
+($1.82T July, $2.21T August, $1.98T September).
+
+*Market cap, from partial share counts.* 0.79% of index-member observations computed to
+under $500M — Simon Property at $1.7M, Fox at $62 — because a filer tags one share class or
+a treasury context on its cover page. The 1st percentile of everything above the threshold
+is $2.2bn, so there is a clean gap rather than a continuum. Those are now discarded and
+counted. It matters because market cap is a *denominator*: a 10,000-share Simon Property
+has a book-to-market of 300, and any value strategy buys it first.
+
+**Deliberate simplifications, stated rather than hidden.** Flow quantities use the ANNUAL
+XBRL duration rather than a reconstructed trailing twelve months — annual is what Sloan
+(1996) and Novy-Marx (2013) used, and rebuilding fiscal Q4 as `annual - nine-month YTD` for
+every fiscal calendar is a sign error away from a feature that looks like alpha. Only
+unrevised daily macro series are used (ADR-011); the seven revised ones wait for TODO-7.
+
+**Consequence.** Fundamental features begin 2010 and cover 649 of 973 historical index
+members, disproportionately survivors. Strategies that need them declare a `min_date` and
+run on a shorter, kinder window — which is why `backtest suite` scores every strategy
+against the index over *its own* dates.
+
+---
+
+## ADR-031 — The genetic algorithm searches weighted rank blends, not expression trees
+
+**Status:** accepted (2026-08-28)
+
+**Decision.** The GA's search space is a weighted sum of cross-sectionally *ranked*
+features plus a small portfolio-shape gene set: 19 genes for the price preset, 29 with
+fundamentals. No expression trees, no evolved arithmetic, no products of indicators.
+
+**Why the smallest space that can still express an idea.** An unconstrained search over
+indicator combinations finds something that works beautifully in-sample every single time.
+That is not a risk, it is arithmetic — the maximum of N draws grows with N whether or not
+there is signal. Four structural defences, chosen because a statistical correction applied
+to an unbounded search corrects a number that was never meaningful:
+
+- **Ranks, not raw values.** One bad share count cannot dominate a portfolio; it is worth
+  exactly "first place".
+- **A dead zone.** Weights under ±0.10 are exactly zero, so "how many features does this
+  use" has an answer, parsimony pressure has something to grip, and two behaviourally
+  identical genomes deduplicate.
+- **Curated presets.** 13 features, or 23 with fundamentals — not all 75. Every extra
+  feature multiplies the space and the trial count the deflated Sharpe must discount.
+- **Every individual is readable.** `describe_genome` prints a winner as sentences. A
+  winning parameter vector nobody can read is a winning vector nobody can check.
+
+**Fitness is not return.** Handed raw return, a long-only GA finds leverage as
+concentration: `top_k` at its floor, ten names, a magnificent CAGR and a 70% drawdown. The
+default objective is the **monthly** Sharpe — the same quantity `registry.deflate()` uses,
+so the search and its own significance test look at the same number — aggregated across
+folds as `mean - 0.5 x std`, with optional turnover and per-feature complexity penalties.
+
+**The behavioural fingerprint is the trial count.** The evaluation cache and the registry's
+`n_trials` key on the same rounded, dead-zoned vector. Counting behaviourally identical
+individuals twice would over-deflate the winner; not deduplicating at all would report a
+small trial count for a large search and under-deflate it.
+
+**Speed.** ~0.15s per evaluation, so 1,500 individuals is about four minutes. Three things
+buy it: the panel is memoised, feature ranks are precomputed once for the whole population
+(the ranks depend on the date and the tradable mask, not on the genome), and each
+individual is one backtest whose folds are sliced from the resulting curve rather than
+re-run. The pre-ranked columns are named `<feature>__rank` so a strategy handed the wrong
+panel fails at the first rebalance instead of silently summing raw ratios.
+
+**What is deliberately absent.** Multi-objective (NSGA-II) selection, island models,
+adaptive operator rates. All are reasonable and none address the failure mode that actually
+threatens this project, which is not slow convergence — it is converging beautifully onto
+noise.
+
+---
+
+## ADR-032 — Folds measure consistency, not out-of-sample performance
+
+**Status:** accepted (2026-08-28)
+
+**Decision.** GA fitness defaults to the metric computed on each of four contiguous
+sub-periods of the research window, separated by a one-month embargo, aggregated as
+`mean - 0.5 x std`. The folds are sliced from the single equity curve each individual
+already produced.
+
+**Why folds at all.** A strategy that made all its money in 2009 and nothing since has a
+fine full-sample Sharpe. Fold consistency separates that from a strategy that worked in
+every sub-period, and that distinction is most of what separates a discovery from a
+coincidence on nineteen years of monthly data.
+
+**Why contiguous with an embargo, never random K-fold.** Financial data is autocorrelated
+and a shuffled split leaks across the boundary. The embargo is one month because that is
+one holding period under ADR-016 — exactly the span over which a position opened in one
+fold is still held in the next.
+
+**What this is NOT, stated plainly because the name invites the confusion.** Every fold is
+inside the research window and every individual is selected using all of them. A good fold
+score is evidence of consistency, not of generalisation. The out-of-sample test is the 2022
+holdout (ADR-025), it is looked at once, and looking is recorded.
+
+**Why not a true walk-forward, refitting per fold.** Because an individual here is not
+fitted to anything — it is a parameter vector, and *the search* is the fitting procedure. A
+genuine walk-forward means re-running the entire GA inside each training window and
+evaluating its winner on the next. That is the right next step and it costs one full search
+per fold; it is deliberately not pretended at with a cheaper mechanism that would carry the
+same name.
+
+**Cost.** Slicing a curve is free. Four folds add no backtests, which is the only reason
+the default can afford to be the robust option rather than the fast one.
+
+---
+
+## ADR-033 — A forward test is a pre-registered, paired comparison, not a later backtest
+
+**Status:** accepted (2026-08-28)
+
+**Decision.** Out-of-sample evaluation after the research window gets its own package
+(`src/sp500lab/forward/`) and its own command tree. A forward test always runs **two**
+backtests — the research window as the prediction, the forward window as the outcome —
+reports the difference next to the standard error of that difference, and requires a
+**seal**: a record of what was predicted, written before the look.
+
+**Why not just `backtest run --holdout only`.** That already exists and it is the wrong
+shape for the job in three ways.
+
+*It reports a number, not a comparison.* "Sharpe 0.49 over 2022–2026" is not a result.
+The result is that the research window said 0.69 and the forward window said 0.49, and
+that the standard error on that difference is 0.56 — which is the whole story and none of
+it is in a single-run summary.
+
+*It has no memory of the prediction.* By the time anybody reads a forward figure, the
+research figure it was supposed to beat is a row in a 4,000-line trial log.
+
+*It cannot see the selection problem.* The holdout stops a strategy from being FITTED to
+2022 onward. It does nothing about **choosing** what to test after seeing how it did, and
+that is the failure that actually happens. Twenty honest `--holdout only` runs, three
+reported, and the holdout is a second research window with no trace of how it became one.
+
+**Pre-registration, with an escape hatch that is recorded rather than closed.** A seal
+records the configuration fingerprint, the research-window prediction, the trial count
+behind the candidate, and a free-text rationale. `forward seal` writes one and spends
+nothing. Requiring it before every run would be the strict design and would be routed
+around within a week, so `forward run` **auto-seals** what it has not seen — and records
+`seal_mode` as `auto` rather than `declared`. The numbers in an auto seal are equally
+clean; what it cannot prove is ordering. That distinction travels on every downstream
+table, which is the best a tool can do.
+
+The **earliest** line for a seal id binds. Ids hash the configuration rather than the
+clock, so a seal rewritten after a disappointing look cannot replace the prediction it
+failed to meet.
+
+**Refutation, not confirmation, and the vocabulary says so.** The forward window holds 54
+monthly observations. The standard error of a Sharpe over that span is about 0.47, so a
+Sharpe of 1.0 carries a 95% band of roughly [0.06, 1.94] and the smallest difference from
+the research window the test could resolve is about 1.35. A window this short can refute a
+strategy that fails badly and cannot confirm one that does not. So the verdicts are
+`failed` / `decayed` / `held` / `inconclusive`, `held` is documented everywhere as "not
+refuted", and `windows.describe_power()` prints the band next to every verdict. Below 24
+months no verdict is offered at all.
+
+**The verdict is computed from the z, never from the raw drop.** A Sharpe falling from
+1.32 to 0.71 looks decisive and is 1.1 standard errors. Reading the drop directly would
+call noise a decay on this window roughly a third of the time.
+
+**Data vintage, because out-of-sample data keeps arriving.** The forward window grows by a
+month every month. A second look next year re-reads what it already saw *except* for the
+new months, which are genuine fresh evidence. Every record stores the vintage it ran
+against, and the next look reports `fresh_months`. The vintage is the last date the
+previous look actually saw — the forward leg's own end, not the panel's — because using
+the panel's end would retire months no look has ever covered.
+
+**Multiple testing on the forward window itself.** `store.selection_bar()` applies
+`metrics.expected_max_sharpe` to the spread of forward Sharpes observed, counted per
+candidate rather than per run. Forward runs are also logged under a real study name, so
+`experiments deflate forward-test` computes the correction with the registry's own
+machinery, and `n_trials` there means the number of candidates the holdout has been asked
+about.
+
+**All three cost settings in one look.** costs.py insists all three always be reported,
+and this is the one place where fetching a missing one later would cost a second look.
+`look_number` counts per (candidate, cost model, mode), so three cost settings of one
+strategy are one look at that candidate rather than three.
+
+**Two modes, both one look.** `paired` runs the forward window from a fresh $100k with an
+empty book — the honest simulation of reading the research and starting to trade in 2022,
+and it pays entry costs the continuous path would not. `continuous` runs one unbroken
+backtest and slices it — the honest simulation of having run it all along. Neither is more
+correct, they differ by about a month of entry cost, and `mode` is on the record so
+neither can be reported without the other being visible.
+
+**Consequence.** `forward window`, `forward seals`, `forward seal` and `--dry-run` are all
+free and answer most questions. Only `forward run` and `forward suite` read reserved data,
+they announce it before doing so, and they land in the same unsilenceable ledger ADR-025
+established.
+
+---
+
+## ADR-034 — The forward record is stored separately, and is enough to rebuild the result
+
+**Status:** accepted (2026-08-28)
+
+**Decision.** Forward tests write three append-only JSONL files under
+`data/experiments/forward/` — `seals.jsonl`, `forward_runs.jsonl` and
+`forward_curves.jsonl` — none of which `SP500LAB_REGISTRY=off` can silence. The record
+carries both legs, the full comparison and the honesty diagnostics, and the stored curves
+carry both windows, so a report built years later needs neither the panel nor a re-run.
+
+**Why not reuse `runs.jsonl` and `curves.jsonl`.** Both legs *are* logged there and their
+curves *are* stored there; this is not a rejection of ADR-026 or ADR-027. Three things the
+trial log cannot do:
+
+1. **It can be switched off.** That is correct for a scratch backtest and wrong for the
+   one kind of run that consumes an irreplaceable resource. Same asymmetry as the holdout
+   ledger.
+2. **The record is a pair.** The quantity of interest is a difference between two runs
+   plus the standard error of that difference. It does not fit a `RunRecord`, and
+   reconstructing it later would mean re-deriving which two runs belonged together.
+3. **The lifecycles differ by three orders of magnitude.** `runs.jsonl` holds 4,000 lines
+   and grows by a thousand per genetic search. `forward_runs.jsonl` will hold tens, ever.
+   Mixing them buries the second kind.
+
+Measured cost: 5.6 KB per record, 10.4 KB per curve pair, 1.5 KB per seal. At tens
+of records that is nothing, and the alternative is re-running a look that cannot be
+re-run.
+
+**Structured on disk, flat in a DataFrame.** The two legs are nested under `research` and
+`forward` with identical field names, so code can rebuild a `compare.Leg` from either and
+one comparison function serves both. `load()` flattens them to `research_*` / `forward_*`
+columns because that is what a table wants. Only one of the two shapes is written down.
+
+**The prediction and the re-measurement are both kept.** `research` is the sealed
+prediction and is what the comparison uses — that is what pre-registration means.
+`research_recomputed` is the research window as it measures at test time, and
+`seal_drift_sharpe` is the gap. Non-zero means the data changed under the prediction (a
+re-ingest, a restatement, a fixed bug). A large drift invalidates the comparison rather
+than adjusting it, and there is no way to notice it without storing both.
+
+**Curves keep the window's opening level, not just its month ends.** A forward window
+opening 2022-01-01 first trades 2022-02-01 and its first month end is 2022-02-28. Rebasing
+to that month end — which is what ADR-027 does, correctly, for a research run starting at
+a month end — would silently drop February from the curve, from the stitched chart and
+from the 2022 row of the annual table. That is about 2% of the evidence in a 54-month
+window, and 2022 is the most informative year the holdout contains. So the stored grid is
+month ends plus the run's own first session.
+
+**Each window is rebased to its own start.** The two legs are independent runs and the
+forward one really did begin from a fresh $100k; a shared base would imply a continuity
+that did not happen. `stitched_curve()` re-imposes it for charting, marks the join in
+`attrs["join_date"]`, and its docstring says plainly that it is a presentation rather than
+a simulation.
+
+**No reports in this package.** `store.py` exposes seven pure read functions — `load`,
+`scoreboard`, `selection_bar`, `get`, `load_curves`, `stitched_curve`, `annual_table` —
+returning DataFrames and dataclasses. The forward reports live in
+`reporting/forward_views.py` on the same seam ADR-028 draws for everything else
+(ADR-035), and they need nothing beyond those seven calls and nothing from the panel at
+all.
+
+**Three small promotions in `registry.py` to avoid a second copy.** `append_jsonl`,
+`read_jsonl`, `to_monthly`, `jsonable` and `panel_fingerprint` were private and are now
+public. The append helper heals a truncated final line before writing (ADR-026), and two
+implementations of a subtle recovery path is how one of them ends up wrong. `to_monthly`
+being shared is what guarantees the forward curves and the trial-log curves land on the
+same date grid.
+
+**A statistic promoted too.** `metrics.sharpe_standard_error` and
+`sharpe_confidence_interval` are new, and `probabilistic_sharpe` was rewritten as
+`norm_cdf((SR − SR0) / SE)` over the first of them. The algebra is identical — the PSR
+denominator already *was* that standard error — and writing it once means a confidence
+interval can never disagree with the probability printed beneath it.
+
+---
+
+## ADR-035 — The forward report set, and a second rendering backend
+
+**Status:** accepted (2026-08-28)
+
+**Decision.** `sp500lab report forward` writes a directory rather than a file: an
+executive summary, one technical report per candidate, a cross-sectional decay analysis,
+an honesty page, Markdown copies of all of it, and the underlying CSVs. The views live in
+`reporting/forward_views.py`, a sibling of `views.py`, and a new `render/markdown.py`
+renders the same `Report` objects as text.
+
+**Why a sibling module rather than more of `views.py`.** Size is the small reason.
+The real one is that a forward report asks a different question. Every report in
+`views.py` asks "what did this strategy do?"; every report here asks "did what it did out
+of sample match what the research window predicted, and is the gap larger than the
+sampling error of a 54-month sample?" That needs different tables, a different
+scoreboard, a different scatter and a different editorial voice. Interleaving them would
+blur both, and the file that composes eight reports does not need to compose twelve.
+
+**One caveat outranks the rest and is printed on every page.** `views.py` establishes
+that the caveats travel with the numbers. Here there is a single caveat that dominates:
+54 monthly observations put a ±0.9 band around an annualised Sharpe of 1.0, so a forward
+test can refute a strategy and cannot confirm one. `_power_note()` is therefore not
+optional, not at the bottom, and pinned by a test. So is the null-hypothesis note:
+`random_weight` encodes no forecast and also "held", which is the clearest available
+demonstration that a verdict is a statement about matching a prediction rather than about
+quality.
+
+**The cross-sectional report exists because no per-strategy page can contain it.** The
+question the whole exercise was run to answer is whether the research window's *ranking*
+predicted the forward window's, and that is a property of the set. `rank_agreement()`
+computes a Spearman correlation over the index-relative columns — rank rather than
+Pearson, because the question is whether the ORDER survived and one outlier would
+dominate a linear correlation on twenty points. It is hand-rolled: the project runs on
+four libraries and this is a rank, a mean and a covariance.
+
+**Markdown as a second backend, and why it is worth its 250 lines.** ADR-028 claims the
+specs-and-views split lets a different frontend reuse every view untouched. Until now
+that was an assertion. `render/markdown.py` is it being cashed: the same `Report` objects
+become text, and not one line of any view changed. It pays for itself three ways — a
+summary that pastes into an email or an issue, a format still readable when nothing
+renders today's SVG, and the cheapest possible regression test for the seam, because a
+view that started emitting markup would render fine in HTML and be visibly broken in
+Markdown.
+
+Charts are described rather than faked. A line chart has no honest Markdown form and an
+ASCII sparkline would look like data while being an artefact of column width; bar charts
+and heatmaps *are* small grids of numbers, so those are tabulated and lose nothing.
+
+**The raw data ships with the argument.** `data/forward_tests.csv`,
+`data/forward_curves.csv` and `data/seals.csv` sit beside the pages. A report is an
+argument, and the numbers under it should be separable from it — otherwise the only way
+to disagree is to rebuild the pipeline.
+
+**Nothing in the report path runs a backtest or reads the panel.** Every figure comes out
+of `data/experiments/forward/`. That is the ADR-034 guarantee being exercised rather than
+asserted, and `test_the_stored_record_is_enough_to_rebuild_the_comparison` holds it.
+
+**Only the extremes are labelled on the scatter.** Twenty-two names in one cloud overlap
+into a smear, and the chart's job is the shape of the cloud rather than the identity of
+every point. The scoreboard directly above it names all of them in order.
+
+**Cost.** About 34 MB for 22 candidates, dominated by the embedded trade ledgers — the
+same trade-off `views.MAX_EMBEDDED_TRADES` already makes, and `reports/` is gitignored
+and rebuildable in seconds.
+
+---
+
+## ADR-036 — A separate leg engine for calendar rules, pinned to the monthly engine by identity
+
+**Status:** accepted
+
+**Context.** The overnight effect, the weekend effect, turn-of-month and the other
+calendar anomalies are claims about WHEN the market pays, at sub-day granularity: a
+position entered at one close and exited at the next open. The monthly engine cannot
+express that, and its central invariant — a signal formed at the close fills at the NEXT
+open (ADR-017) — exists to stop a signal trading on information from its own fill.
+Loosening that invariant to admit close fills would re-open the exact hole it closes.
+
+**Decision.** A second, deliberately small engine (`timing/`): every session has two
+tradable legs (close→next open, open→close), a strategy is two boolean vectors over the
+sessions, and the walk toggles one bit of state at two checkpoints per session. Close
+fills are legitimate here for one stated reason: a calendar rule has no signal — the
+schedule was knowable years in advance — so there is no information to leak. The one rule
+that reads data (the VIX gate) conditions on the PRIOR session's close, and any future
+rule that conditions on same-session data must move its entry to the next open.
+
+**What is shared rather than rebuilt:** the adjustment chain (`compute_factors`, the same
+function the benchmark uses, so the dividend lands in the overnight leg exactly where the
+ex-date puts it), the cost model and its three settings, the metrics, the experiment
+registry, the holdout clamp and its unsilenceable ledger, and `BacktestResult` itself —
+so a calendar rule gets a registry row, a seal and a forward record through the same
+machinery as every other competitor (the forward engine gained a `runner` parameter for
+exactly this).
+
+**The engine earns trust by identity, not review.** Two acceptance checks, both exact:
+(1) both legs always on at zero cost reproduces the adjusted SPY series to **0.00 bp/yr**
+— the same series ADR-018 calibrates the monthly engine against; (2) the overnight-only
+and intraday-only strategies PARTITION buy-and-hold, so their NAV product must equal it
+at every session — measured max error **6×10⁻¹⁵**, float noise. The second identity is
+what turns "the overnight share of SPY's return" from an estimate into a measurement.
+
+**Measured result, and the point of the whole exercise.** 2007-04→2021-12, gross:
+overnight 8.31%/yr (Sharpe 0.71, maxDD −29%), intraday 2.21%/yr (0.22, −47%). Under
+realistic costs the overnight rule falls to 3.66%/yr and pessimistic to 0.67%: ~500
+round trips a year eat the anomaly at retail size. **The gap between gross and net is
+the finding**, and the deflated Sharpe of the best calendar rule against the family's
+own 27 trials is 0.69 — nothing in the family survives its own search. The tradable
+expression of the overnight fact is therefore the monthly `overnight_momentum` strategy
+(ADR-037), which trades twelve times a year instead of five hundred.
+
+**Costs.** SPY has no row in `gold_half_spread`, and Corwin-Schultz cannot resolve a
+spread this narrow anyway, so the half-spread IS the ADR-020 tick floor
+(`tick_size/price`, ~0.8bp in 2007, ~0.2bp today) — slightly wider than SPY's usual
+one-tick market, which errs the direction a cost model should.
+
+---
+
+## ADR-037 — The 2026-08 wave: new families after the holdout was spent, with the contamination written down
+
+**Status:** accepted
+
+**Context.** The reserved 2022+ period was spent on 2026-08-28 (ADR-033: 22 candidates,
+one sealed set, 66 looks). The project then added new competitors: five cross-sectional
+strategies (`strategies/frontier.py`), a shallow neural net (`learned.py`), nine calendar
+rules (ADR-036), four features, and a third GA search. Every number those can produce on
+2022-2026 is weaker evidence than the first test was, and no mechanism in the registry
+can see why: the author had read the first forward test — knew 2022-2026 was one mega-cap
+regime — before choosing what to build.
+
+**Decision.** Build them anyway, and write the contamination down everywhere the numbers
+appear rather than pretending the period is still clean. Each new candidate was sealed
+with a rationale that discloses the contamination in its own text, forward-tested through
+the standard harness, and reported with the caveat pinned beside the verdict. Their only
+uncontaminated test is data that arrives after 2026-08 — `forward window` counts it, and
+re-testing next year buys exactly the months that have accrued.
+
+**What was added, and why each earns its trial.** Chosen to cover mechanisms the first
+twelve hypotheses do not touch, mostly from the project's own ranked plan
+(WHAT_TO_BUILD_NEXT.md — ensembling was rank 6, volatility capping rank 2, the shallow
+net rank 8):
+
+* `overnight_momentum` — 12-1 momentum computed from overnight legs only (Lou, Polk &
+  Skouras 2019). Needs `adj_open` beside `adj_close`, which this panel keeps and most
+  data layers throw away. Research window: **11.85%/yr, Sharpe 0.55** against
+  `momentum_12_1`'s 6.39%/0.38 over the identical window and construction — the largest
+  single-difference improvement in the file.
+* `week52_breakout` — George & Hwang anchoring; the GA's price winner already weighted
+  `high_52w_ratio` +0.38, so the standalone test was owed.
+* `div_month` — Hartzmark & Solomon's dividend-month premium, off the new `div_due_1m`
+  cadence feature; only buildable because dividends are stored as discrete events.
+* `vol_managed` — the long-only half of Moreira & Muir: exposure `min(1, 1/vol_ratio²)`,
+  floor 0.20. **Sharpe 0.67 vs SPY 0.59**, the best new hand-written entrant, and it
+  cannot lever up so the published effect is deliberately halved.
+* `ensemble_rank` — the rank-average of all twelve hypotheses. The cheapest idea in the
+  plan and the honest bar for any future model: it posted 0.54, and several of its own
+  members beat it, which is itself a finding about how correlated the twelve are.
+* `shallow_mlp` — Gu-Kelly-Xiu shaped: features→32→16→1, seed-ensembled, refit yearly,
+  trained only on features ≥90% populated over its own window, labels ending a full
+  horizon before the as-of date (RollingRidge's discipline, plus a hard assert).
+  Realistic Sharpe 0.38; its study's deflated Sharpe is **0.947 — below the 0.95 bar**,
+  and it is reported that way.
+
+**Features** (`FEATURE_VERSION` 2→3): `mom_on_12_1`, `mom_id_12_1`, `on_minus_id_252d`,
+`div_due_1m`. All four pass the bit-identical leakage check; the overnight/intraday pair
+compose back to `mom_12_1` by construction, and the composition is a test.
+
+**The trial accounting.** Every run landed in named studies (`frontier-1`, `mlp-1`,
+`timing-1`, `ga-night-1`) so the deflation has real denominators, and the forward records
+raise `store.selection_bar()`'s candidate count for everyone — the honest price of
+testing more ideas, paid in public.
+
+**Postscript: the wave's own bug, caught by its own absurdity.** `shallow_mlp`'s first
+forward record printed a 2.20 forward Sharpe against a 0.38 research run. Cause: the
+model held its fitted nets on the instance, and the forward harness runs six backtests
+(two legs × three costs) on one instance — so every leg after the first could score on
+nets trained on another leg's future, including a research leg from 2007 scored on nets
+fitted through 2026. Nothing errored; the number was just impossible, which is what
+surfaced it. The fix is a state reset in `on_start` plus a backward-time refit guard,
+pinned by a run-twice-identical test; the model carries a `revision` parameter so the
+fix lands on a new fingerprint and a new seal, because the contaminated seal is
+immutable by design and the way to retire it is to stop matching it. Revision 2 measures
+0.33 forward against 0.38 research — held, mediocre both ways. Lesson for the HANDOFF §7
+table: **a strategy that keeps fitted state must reset it per run, because instances
+outlive runs** — determinism across seeds is not determinism across reuse.
+
+---
+
+## ADR-038 — Genome presets are immutable; new features mean a new preset
+
+**Status:** accepted
+
+**Context.** The four ADR-037 features are exactly what the GA should get to search —
+that was half the point of building them. But an evolved winner is stored as a bare
+float vector plus a preset NAME, and decodes by position against that preset's feature
+tuple. Appending features to `PRICE_FEATURES` would silently mis-decode every genome in
+every existing checkpoint: `ga-price-1-best` would reconstruct as a different strategy
+with the same name, and nothing would error.
+
+**Decision.** Presets are append-only as a SET: an existing preset's tuple is frozen the
+moment a search has written a checkpoint against it. New inputs get a new preset —
+`night` = the 13 price features + the four new ones, `PRESET_MIN_DATE` "" since all are
+price/event derived.
+
+**Measured result.** `ga-night-1`: 25 generations × 60, **1,404 distinct trials**, winner
+**10.89%/yr, Sharpe 0.95 daily / 1.15 monthly, maxDD −17.9%** vs SPY 10.70%/0.60/−55%
+over 2007-04→2021-12; survives pessimistic costs (9.99%); **deflated Sharpe 0.9828**
+against the 1,404-trial bar of 0.55. It reads as sentences, and two of them are worth
+recording: it ranked `div_due_1m` *negatively* (avoiding predicted-dividend names, the
+opposite sign to `div_month`'s hypothesis), and inside the blend it weighted intraday
+momentum +0.32 against overnight momentum −0.19 — the reverse of the standalone LPS
+result. Partial weights in a 14-feature blend are not standalone claims, and the
+disagreement between the search and the papers is exactly the kind of thing the next
+years of forward data exist to adjudicate. ADR-032's caveat applies unchanged: fold
+consistency is not generalisation, and both prior GA winners decayed out of sample.

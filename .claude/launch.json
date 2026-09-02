@@ -4,8 +4,26 @@
     {
       "name": "preview",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8731", "--directory", "logs"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8731",
+        "--directory",
+        "logs"
+      ],
       "port": 8731
+    },
+    {
+      "name": "reports",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8732",
+        "--directory",
+        "reports"
+      ],
+      "port": 8732
     }
   ]
 }

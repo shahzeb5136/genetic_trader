@@ -195,11 +195,20 @@ from the best of N lucky draws, however good the raw Sharpe looks.
 **Only at the very end**, with one final candidate:
 
 ```bash
-python -m sp500lab backtest run winner --holdout only --study final-test
+python -m sp500lab forward seal winner --rationale "why this one, written before the look"
+python -m sp500lab forward run winner
 ```
 
 Then stop. If it disappoints and you go back to searching, the holdout is spent — and
 the ledger will show that it is.
+
+`backtest run winner --holdout only --study final-test` does reach the same data and is
+recorded the same way, but it reports a *number* where the thing you want is a
+*comparison*: what the research window predicted, what the forward window delivered, and
+whether the gap between them is larger than the sampling error of a 54-month sample. That
+is what `sp500lab forward` builds, along with the pre-registration that stops twenty
+"final tests" from turning the holdout into a second research window. See
+[FORWARD_TEST.md](FORWARD_TEST.md).
 
 ---
 
@@ -300,6 +309,54 @@ at import. Over-counted trials would silently make every real result look worse.
 ## 8. Related
 
 - `docs/DECISIONS.md` **ADR-025** (holdout) and **ADR-026** (registry)
+- `docs/FORWARD_TEST.md` — how to spend the holdout: pre-registration, the paired
+  comparison, and what 54 months can actually prove (**ADR-033**, **ADR-034**)
 - `docs/BACKTEST.md` — the engine these runs come out of
 - `src/sp500lab/backtest/registry.py` — the implementation, documented at length
 - `tests/test_registry.py` — 42 tests, mostly about the two silent failure modes
+
+---
+
+## A genetic algorithm is a study
+
+```bash
+python -m sp500lab evolve run --study ga-1 --generations 25 --population 60
+python -m sp500lab experiments deflate ga-1
+```
+
+Every individual is logged. Not the winners — every one. `evolve run` does it by default
+and `--no-log` prints a warning saying the result can no longer be corrected, because it
+cannot: a discarded genome leaves no trace anywhere else in this repo.
+
+**The trial count and the GA's evaluation cache key on the same fingerprint.** It is
+*behavioural*: two genomes that differ only inside the dead zone produce the same portfolio
+and count as one hypothesis. Getting that wrong in either direction is a real error —
+counting identical individuals twice over-deflates the winner, and not deduplicating at all
+reports a small trial count for a large search and under-deflates it.
+
+`evolve run` passes `log_curve=False`. A month-end curve is ~7 KB, so a 1,500-individual
+search would add 10 MB of curves that no query reads. Re-running a winner with the curve on
+is the **same trial** — the fingerprint does not include it — so nothing is lost:
+
+```bash
+python -m sp500lab evolve best ga-1 --all-costs --trades reports/trades/ga-1
+```
+
+### A worked example
+
+`ga-price-1`, 1,400 distinct individuals:
+
+```
+n_trials                           1400
+trial_sharpe_std                   0.1909
+expected_max_sharpe_annualised     0.6395     <- the luckiest of 1,400 worthless strategies
+sharpe_annualised_monthly          1.3198
+deflated_sharpe                    0.9913
+```
+
+The bar the search set for itself was 0.64. The winner posted 1.32. It clears 0.95, so it
+survives *the search that produced it* — which is not the same as saying it will work.
+Read [EVOLUTION.md](EVOLUTION.md) for the three reasons to stay suspicious, and note that
+the holdout ledger still reads **0 looks**. That is the only out-of-sample evidence
+available, it is worth exactly one look, and there is currently nothing to spend it on
+until a true walk-forward narrows the candidates.

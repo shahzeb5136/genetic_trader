@@ -172,6 +172,30 @@ python -m sp500lab backtest coverage --annual
 strategy is only profitable under the optimistic setting. Use it for anything you intend
 to quote.
 
+### The calendar lab (daily legs on SPY - docs/TIMING.md)
+
+```bash
+python -m sp500lab timing accept
+```
+
+```bash
+python -m sp500lab timing suite
+```
+
+```bash
+python -m sp500lab timing run tm_overnight --all-costs
+```
+
+```bash
+python -m sp500lab timing decompose --out reports/overnight_by_ticker.csv
+```
+
+`timing accept` is the lab's gate, same as `backtest accept` is the engine's: buy-and-hold
+through the leg engine must match the adjusted SPY series (currently 0.00bp/yr), and
+overnight × intraday must multiply back to buy-and-hold exactly. `timing seal` and
+`timing forward` run calendar rules through the standard forward harness — the second
+one spends looks and is permanently recorded, like every other look.
+
 ### Rebuild order after changing upstream data
 
 The panel caches aggressively, so this order matters:
@@ -324,6 +348,11 @@ re-derive what you tried: a discarded idea leaves no trace in git, in the result
 directory, or anywhere else. Losing the log does not lose a result, it loses the ability
 to know whether any result was real.
 
+`data/experiments/forward/` is the same argument one step stronger. Losing a forward
+record loses the only out-of-sample evidence the project has, and losing a *seal* loses
+the proof that a prediction was written before its answer was known. Neither can be
+re-derived by re-running anything. See [FORWARD_TEST.md](FORWARD_TEST.md).
+
 ---
 
 ## Reports
@@ -383,6 +412,11 @@ Priority order — these are **not** equally valuable:
    irreplaceable, for a different reason: a discarded idea leaves no trace anywhere else,
    and without the trial count no searched result can be deflated (ADR-026). Tiny.
    Back up to two places.
+1. **`data/experiments/forward/`** — the seals and the forward-test records. The most
+   irreplaceable directory in the project and the smallest. Each line consumed a period
+   of out-of-sample data that can never be un-consumed, and a seal is evidence of *when*
+   a prediction was made, which nothing else records (ADR-033/034). Back up with the
+   vault.
 2. **`data/bronze/`** — raw artifacts. Free-tier data is re-fetchable in principle, but
    Wikipedia revisions and old filings are slow to re-pull. Worth backing up.
 3. **`data/_cache/`** — convenience only. Disposable.

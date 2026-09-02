@@ -1,7 +1,18 @@
 # Handoff
 
-Written 2026-08-27 for whoever picks this up next — human or model. Read this before
-touching anything. It assumes no prior context.
+Written 2026-08-27, extended 2026-08-28 and 2026-08-30, for whoever picks this up next —
+human or model. Read this before touching anything. It assumes no prior context.
+
+**What changed on 2026-08-28:** the trade ledger, the feature layer (TODO-4), twelve
+strategies and the genetic algorithm. Jump to §4c for the summary; ADR-029 to ADR-032 for
+the decisions.
+
+**What changed on 2026-08-30:** the 2026-08 wave — four overnight/dividend features
+(feature_version 3), five second-wave strategies, a shallow neural net, a daily leg
+engine with nine calendar rules, a third GA search over the new features, the Algorithm
+Book and Calendar Lab report pages, and a forward test of all sixteen new candidates
+through the standard harness. Jump to §4d; ADR-036 to ADR-038 for the decisions, and
+read the contamination note in ADR-037 before quoting any of the wave's forward numbers.
 
 ---
 
@@ -11,13 +22,43 @@ A research data platform for the S&P 500, built to a **$20/month** data budget b
 individual. The long-term goal is a **competition**: genetic algorithms and other
 classical strategies against neural nets, all scored on one shared backtest harness.
 
-**Current phase: the data layer and the backtest engine are built. The feature layer is
-not.** The data got built and validated first — every project of this kind dies on its
-data layer — and the engine came second because it is the fitness function every
-competitor will be scored by. Features (TODO-4) are next, then walk-forward validation,
-then the genetic algorithms.
+**Current phase: data layer, backtest engine, feature layer, twelve strategies and a
+working genetic algorithm.** The data was built and validated first — every project of
+this kind dies on its data layer — the engine came second because it is the fitness
+function every competitor is scored by, and the feature layer third because a GA cannot
+afford to recompute an indicator inside a fitness evaluation.
 
-Start here: `docs/BACKTEST.md`, then `python -m sp500lab backtest accept`.
+**The forward-testing harness is built and has been spent** (ADR-033/034/035,
+`docs/FORWARD_TEST.md`). The whole roster — twenty registered strategies plus both
+genetic-algorithm winners — was sealed as one set and tested on 2022-01 to 2026-08 under
+all three cost settings. **66 looks are in the holdout ledger and the reserved period is
+gone.** Anything built on it from here is research, not testing.
+
+The result, under realistic costs: 16 held, 5 decayed, 1 failed; **2 of 22 beat the index
+on risk-adjusted return**; Spearman rank correlation between the research ranking and the
+forward ranking **−0.16**, with 0 of the research top five still in the forward top five.
+Both genetic-algorithm winners decayed hardest — `ga-price-1-best` from a 1.15 Sharpe to
+0.19 (−1.94σ), `ga-full-2-best` from 1.36 to 0.67 (−1.71σ) — which is exactly what the
+multiple-testing literature predicts of a winner drawn from 1,400 individuals.
+
+Read it with two cautions attached. `random_weight` also "held": a verdict says whether a
+strategy matched its own prediction, not whether it is any good. And 2022–2026 is one
+4.6-year regime dominated by mega-caps, against which every long-only equal-weighted
+strategy here was structurally disadvantaged. `python -m sp500lab report forward` writes
+the full set into `reports/forward_tests/`.
+
+**What is still missing is a true walk-forward harness**, and it is the next thing worth
+building. GA fitness currently measures fold *consistency* inside the research window,
+which is evidence of robustness and not of generalisation (ADR-032). The forward harness
+is not a substitute and never was: it evaluates a *fixed* candidate after the boundary,
+where a walk-forward re-runs the *search* inside the research window. It was run before
+one existed, which is the wrong order — a walk-forward would have narrowed the candidate
+list first, and the set that went forward was therefore the whole roster rather than a
+shortlist.
+
+Start here: `docs/BACKTEST.md`, then `python -m sp500lab backtest accept`. If you want the
+short version of what is new, `docs/TRADES.md`, `docs/EVOLUTION.md` and
+`docs/FORWARD_TEST.md`.
 
 Repo: `https://github.com/shahzeb5136/genetic_trader` (public, 2 commits)
 
@@ -47,8 +88,13 @@ Every figure below was measured on 2026-08-27. Re-derive with `python -m sp500la
 **The headline: 971 tickers have been in the index since 2007-03. 501 are in it today.
 470 are gone.** That gap is the entire reason this project exists.
 
-Tests: **168 passing** (`python -m pytest tests/ -q`) — 30 data-layer, 49 engine, 42 registry, 47 reporting.
+Tests: **376 passing** (`python -m pytest tests/ -q`) — data layer, engine, registry,
+reporting, trade ledger, features, evolution, forward harness, and (2026-08-30) the
+timing leg engine and the frontier strategies.
 Backtest acceptance: **6 of 6 passing** (`python -m sp500lab backtest accept`).
+Timing acceptance: **both identities passing** (`python -m sp500lab timing accept`,
+0.00bp/yr calibration, 6e-15 decomposition error).
+Feature leakage: **79 of 79 bit-identical** (`python -m sp500lab features check`).
 Bronze integrity: 700 artifacts, all checksums verified, 25 tombstoned.
 
 **The number that calibrates everything:** buy-and-hold SPY through the engine reproduces
@@ -104,7 +150,12 @@ style preferences. Each one is documented as an ADR in `docs/DECISIONS.md`.
 
 ## 4. Are we ready to build algorithms?
 
-**Yes. The engine exists, it passes acceptance, and the baselines are measured.**
+**They are built.** Twelve strategies in `strategies/alpha.py`, a 75-feature point-in-time
+layer under `data/gold/features/`, and a genetic algorithm in `evolve/`. Three of twenty
+strategies beat the index on risk-adjusted return over their own windows; the GA's first
+run produced a winner with a deflated Sharpe of 0.9913. See §4c.
+
+**The engine exists, it passes acceptance, and the baselines are measured.**
 
 `src/sp500lab/backtest/` is built. TODO-1 (engine), TODO-2 (cost model) and TODO-3
 (delisting returns) are **done**. Full narrative in `docs/BACKTEST.md`; the design
@@ -146,6 +197,92 @@ overwhelmingly likely explanation is a bug in the model, not an edge.
 optimistic costs would conclude that randomness beats momentum. This is why all three
 settings are always reported.
 
+### 4c. What was built on 2026-08-28
+
+**The trade ledger (ADR-029).** `run_backtest` records every order — side, real share
+count, the AS-TRADED price a broker printed that morning, and that order's share of the
+costs. `sp500lab backtest trades <strategy>` exports it as CSV; `sp500lab report trades`
+publishes a page with the CSV embedded in it. Every export prints an audit: for each
+rebalance `cash_after = cash_before + sum(cash_flow)`, and every dollar of cost lands on
+exactly one order. Measured across all twenty strategies: **0.0 disagreement**.
+
+*It found two things immediately.* Orders that never filled were being charged commission
+(costs were priced before the fill check). And dropping sub-cent "dust" orders from the
+ledger broke the cash identity by $1.26 on `equal_weight` — money charged against orders
+nobody could see. Both fixed; both were invisible until somebody could look at the orders.
+
+**The feature layer (ADR-030, this was TODO-4).** 75 features on the month-end grid, 17 MB,
+versioned. `sp500lab features check` rebuilds the whole matrix from a panel that physically
+ends at a past date with every later filing deleted, and asserts the earlier rows are
+bit-identical. All 75 pass. Two silent bugs surfaced during the build and are documented in
+the ADR — one of them (a date-ordinal conversion assuming nanosecond resolution where
+pandas 2.x gives microseconds) made fundamental coverage read as 1.5% instead of 75% and
+raised nothing at all.
+
+**Twelve strategies (`docs/STRATEGIES.md`).** Four of them cannot be built without this
+repository's unusual data: `pead_drift` and `restatement_averse` need `filed_date` beside
+`period_end`, `index_entry_drift` needs point-in-time membership, and `dividend_grower`
+needs dividends as discrete events. `sp500lab backtest suite` scores each against the index
+over *its own* window, which matters more than it sounds — SPY returned 10.42%/yr from
+2007-04 and 15.66%/yr from 2010-07, so a fundamentals strategy showing 17.4% is not beating
+a price strategy showing 11.1%.
+
+**The genetic algorithm (ADR-031, ADR-032).** ~0.15s per evaluation; 1,400 distinct
+individuals in five minutes. First run: 12.40%/yr, Sharpe 1.15, −15.98% maximum drawdown,
+deflated Sharpe **0.9913** against a bar of 0.64. Read `docs/EVOLUTION.md` including the
+three reasons to be suspicious of it before quoting that anywhere.
+
+### 4d. What was built on 2026-08-30 — the wave after the holdout
+
+Everything below postdates the spend of the reserved period, so read ADR-037 first: the
+author had seen the 2022-2026 results before choosing what to build. Nothing was fitted
+to that period; the choice of what to implement was still informed by it; and the wave's
+only clean test is data arriving after 2026-08.
+
+**Four features** (feature_version 2→3, all pass the bit-identical leakage check):
+`mom_on_12_1`, `mom_id_12_1`, `on_minus_id_252d` (the Lou-Polk-Skouras overnight/intraday
+decomposition — buildable because the panel keeps adjusted opens) and `div_due_1m` (the
+dividend calendar, from payment cadence).
+
+**Six monthly strategies.** `strategies/frontier.py`: `overnight_momentum`,
+`week52_breakout`, `div_month`, `vol_managed`, `ensemble_rank` (group `frontier`, folded
+into `all`); plus `shallow_mlp` in `learned.py` — a Gu-Kelly-Xiu-shaped numpy net,
+seed-ensembled, refit yearly, RollingRidge's label discipline plus a hard assert. Only
+`vol_managed` beat the index in research (ΔSharpe +0.08). Studies: `frontier-1`, `mlp-1`.
+
+**The calendar lab** (`timing/`, docs/TIMING.md, ADR-036). A leg engine — hold or don't,
+at every close and open — pinned to the monthly engine by two exact identities
+(calibration 0.00bp/yr; overnight × intraday = buy-and-hold to 6e-15). Nine rules, no
+fitted parameters. Headline: SPY's overnight leg made 8.31%/yr gross at Sharpe 0.71
+against intraday's 2.21%/0.22 — and ~500 round trips/yr of realistic costs cut the
+overnight rule to 3.66%. The gap IS the finding. `sp500lab timing ...` is the CLI;
+`report timing` the page; `timing decompose` the per-ticker split. Study: `timing-1`.
+
+**A third GA search** (`ga-night-1`, preset `night`, ADR-038 — presets are immutable,
+new features mean a new preset). 1,404 trials; winner 10.89%/yr, Sharpe 0.95, −17.9%
+maxDD, deflated 0.9828. Forward: **decayed to 0.20** — the third GA winner in a row to
+decay, now the project's most replicated result.
+
+**Two report pages.** `report algorithms` — the Algorithm Book, every competitor
+explained from its own docstring and scored on one page — and `report timing`. Both
+regenerate inside `report all` and land on the index.
+
+**The forward harness grew a `runner` parameter** so the leg engine's results flow
+through the same seal → paired comparison → store pipeline as everything else. All
+sixteen new candidates were sealed as one set (rationale discloses the contamination)
+and tested under all three cost settings: `ga-night-1-best` and `vol_managed` decayed,
+`tm_weekend` failed, the rest held. The holdout ledger now reads 117 looks; the
+`selection_bar` counts 38 candidates and the bar rose to a 0.72 forward Sharpe —
+anything below that is indistinguishable from the luckiest of 38.
+
+**And one §7-grade bug, caught by its own absurdity** (ADR-037 postscript): revision 1
+of `shallow_mlp` kept fitted nets across runs of one instance, and the forward harness
+runs six backtests per instance — its first forward record printed an impossible 2.20
+Sharpe, which is what exposed it. Fixed by a state reset in `on_start` plus a
+backward-time guard, pinned by a run-twice-identical test, re-sealed as revision 2
+(0.33 forward vs 0.38 research — held, mediocre both ways). The contaminated records
+stay in the append-only ledgers, labelled by their own rationale.
+
 ### Gaps that will bite, by severity
 
 **BLOCKING for anything quoted as a headline**
@@ -164,15 +301,29 @@ settings are always reported.
 
 **IMPORTANT — needed before the competition is meaningful**
 
-- **No feature layer** (TODO-4). `Context` carries a `features` slot and slices it by
-  knowledge date, but `data/gold/` has no feature matrices. Until it does, every
-  competitor computes its own inputs and the competition partly measures who wrote better
-  feature code. **This is the next thing to build.**
-- **No walk-forward harness.** The engine runs one period. Purging, embargo and a
-  touch-once holdout are the GA's scaffolding and do not exist yet.
+- ~~No feature layer.~~ **Built** (ADR-030). 75 features, versioned, with a leakage test
+  that passes bit-identically. Fundamental features begin 2010 and cover 649 of 973
+  historical index members, which correlates with survival — a strategy needing them
+  carries a survivorship bias *on top of* ADR-023, and runs on a shorter, kinder window.
+- **No TRUE walk-forward harness.** GA fitness measures fold consistency inside the
+  research window; every fold is data the winner was selected on. A real walk-forward
+  re-runs the whole search inside each training window and evaluates its winner on the
+  next. At 0.15s per evaluation that is about twenty minutes for five folds. **This is now
+  the next thing to build**, and ADR-032 says plainly what the current mechanism is and is
+  not.
 - ~~No experiment registry.~~ **Built** (ADR-025/026, `docs/EXPERIMENTS.md`). Every run
   is logged as a trial, and 2022-01-01 onward is a holdout that backtests stop before.
   Looking at it takes an explicit flag and is permanently recorded.
+- ~~No way to spend the holdout properly.~~ **Built and spent** (ADR-033/034/035,
+  `docs/FORWARD_TEST.md`). `sp500lab forward` runs the reserved period as a
+  pre-registered paired comparison and stores both legs, the decay, its standard error
+  and the honesty diagnostics; `sp500lab report forward` publishes the set. **66 looks
+  recorded** — the whole roster, one sealed set, all three cost settings.
+- **THE HOLDOUT IS GONE.** There is no second reserved period and no way to make one.
+  The only genuinely out-of-sample data this project will ever have again is the months
+  that have not happened yet; `forward window` reports how many have accrued since each
+  candidate was last tested. Any strategy chosen using the 2022–2026 results from here is
+  being chosen in-sample, and no amount of later care undoes that.
 - **No market cap series** (TODO-5). Size, value and cap-weighting all need it. The shared
   split-ratio machinery it depends on already exists in `normalize/splits.py`.
 - **Sectors are current-only** (TODO-6). Any sector-neutral strategy leaks.
@@ -251,7 +402,35 @@ layer against what they actually recompute beats guessing at it.
 **5. Walk-forward harness.** Purging and an embargo. Required before any *searched*
 result means anything (§6).
 
-**6. Then** the genetic algorithms.
+**6. Genetic algorithms — DONE.** `evolve/`, ADR-031 and ADR-032. Weighted sums of ranked
+features rather than expression trees, every individual logged as a trial, fitness
+measured on fold consistency, and the holdout untouched. `docs/EVOLUTION.md`.
+
+**6b. Forward-testing harness — DONE.** `forward/`, ADR-033 and ADR-034. Pre-registered
+seals, a paired research-versus-forward comparison with the standard error on the
+difference, data-vintage tracking so a later look reports only what is genuinely new, and
+the best-of-N correction applied to the forward window itself. `docs/FORWARD_TEST.md`.
+The machine exists; the holdout is still unspent.
+
+**6c. The forward test — DONE, and the holdout is spent.** The roster was sealed as one
+set and run on 2022–2026 under all three cost settings; `report forward` publishes the
+result into `reports/forward_tests/`. See the top of this document for what it found.
+Testing *everything* is the honest version of running it before a walk-forward existed —
+no selection was made on out-of-sample data — but it spends the period on twenty-two
+candidates rather than one or two.
+
+**7. NEXT: a true walk-forward — now for a different reason.** It can no longer decide
+what to spend the holdout on, because there is nothing left to spend. What it can still
+do is give future work an evaluation loop that consumes nothing: re-run the whole search
+inside each training window and score its winner on the next. That is now the *only*
+honest way to evaluate anything built from here, which makes it more important than it
+was, not less.
+
+**8. And then: let time pass.** The forward window grows by a month every month, and
+those months are the only untainted evidence this project can still acquire.
+`forward window` reports how many have accrued since each candidate was last tested, and
+`fresh_months` on a later look says how much of it is new. Re-testing the same candidate
+a year from now is worth exactly the twelve months of fresh data it adds.
 
 ---
 
@@ -338,7 +517,25 @@ under-recorded. Each backtest reports how many of its exits used one.
 
 ---
 
-### TODO-4 — Feature layer in `data/gold/`  ⬅ NEXT
+### TODO-4 — Feature layer in `data/gold/` ✅ DONE
+
+Built at `src/sp500lab/features/`, documented in `docs/FEATURES.md`, decided in ADR-030.
+75 features on the month-end rebalance grid; `sp500lab features check` is the leakage test
+and it passes bit-identically for all of them. The original specification is kept below
+because the reasoning still governs the code.
+
+**Departures from the original spec, and why.** Wide format and yearly partitions were
+replaced by a single `(R, S, F)` float32 npz keyed by a content hash — the month-end grid
+is 17 MB where a daily one is 590 MB, and nothing in a monthly-rebalanced strategy can use
+the rows in between. Label definitions are not stored: no strategy here needs a label
+matrix, `learned.py` builds its own inside the point-in-time view, and a versioned artifact
+nobody reads rots. Cross-sectional normalisation happens at USE time
+(`signals.rank_pct`) rather than at build time, because the eligibility mask is a
+strategy-level choice — the exception is `features/ranked.py`, which precomputes ranks
+against `panel.tradable()` purely as a GA speed optimisation and names the columns
+differently so the two can never be confused.
+
+#### Original specification
 
 **Why:** computed once, versioned, reused by every competitor. Otherwise the competition
 measures who wrote better feature code rather than who has better signal. For GAs
@@ -368,7 +565,27 @@ should be built on the same date/security index so the two align without a join.
 
 ---
 
-### TODO-5 — Point-in-time market cap
+### TODO-5 — Point-in-time market cap ✅ PARTLY DONE
+
+`log_market_cap` exists as a feature (`features/fundamental.py`), and `book_to_market`,
+`earnings_yield`, `cf_yield` and `buyback_yield` divide by it. It is **not** written to a
+standalone silver/gold table, so anything wanting market cap outside a backtest still has
+to build it.
+
+⚠️ **The split trap is real and the formula below is subtly wrong.** Reported shares are in
+the share basis of the FILING date, so the correct expression is
+
+    market_cap(t) = reported_shares * cum_split(filing) * raw_close(t)
+
+`cum_split(t)` cancels; using `adj_close` (total-return adjusted) instead of `raw_close`
+double-counts the dividend chain. Sanity check passes: NVDA $5.05T, AAPL $4.57T,
+MSFT $3.69T on 2026-08-26.
+
+⚠️ **0.79% of observations are wrong and are discarded.** Multi-class and treasury share
+contexts produce a Simon Property worth $1.7M. Below $500M is treated as a data error;
+the 1st percentile above it is $2.2bn, so there is a clean gap. See ADR-030.
+
+#### Original specification
 
 **Why:** size, value and any cap-weighted construction need it. 329,298
 shares-outstanding facts already exist across 646 companies; they are simply not
@@ -472,20 +689,21 @@ baselines to get *worse* — that is the survivorship bias being removed.
 
 ## 6. Guidance specific to genetic algorithms
 
-This is the part most likely to be got wrong, and it is where this project's stated goal
-lives.
+**Most of this section is now implemented rather than advisory — see `evolve/` and
+`docs/EVOLUTION.md`.** It is kept because every claim below turned out to be right, and
+because the next person will be tempted to relax one of them.
 
 **Speed is a design constraint, not an optimization.** A GA with population 200 over 50
 generations is 10,000 fitness evaluations. At 10s per backtest that is 28 hours per run.
 
-**This is already handled on the engine side: a full backtest runs in ~0.17s**, so 10,000
-evaluations is about 28 minutes. Three things buy that, and a change to any of them will
-cost it — the panel is built once and memoised, the loop is per rebalance rather than per
-security, and Context slices are numpy views that allocate nothing. `ctx.prices` returns a
-DataFrame and is ~1000x slower; never touch it in a fitness function.
-
-The remaining half is TODO-4: features **must** be precomputed in `gold/`. Never recompute
-an indicator inside the fitness function.
+**Handled: an evolved individual evaluates in ~0.15s**, so 10,000 evaluations is about 25
+minutes. Four things buy that, and a change to any of them will cost it — the panel is
+built once and memoised, the loop is per rebalance rather than per security, Context slices
+are numpy views that allocate nothing, and **the feature ranks are precomputed once for the
+whole population** (`features/ranked.py`; a rank depends on the date and the tradable mask,
+not on the genome, so a 4,000-evaluation search was recomputing each one 4,000 times).
+`ctx.prices` returns a DataFrame and is ~1000x slower; never touch it in a fitness
+function.
 
 **GAs overfit more aggressively than almost anything else**, because the search is
 explicitly optimizing the metric you report. Multiple-testing control is not optional
@@ -499,14 +717,26 @@ here:
   2022-01-01 onward is excluded by default, and every look is permanently recorded in a
   ledger that cannot be disabled (ADR-025).
 - Use walk-forward with purging and an embargo. Never random K-fold — financial data is
-  autocorrelated and it leaks. López de Prado's *Advances in Financial Machine Learning*
-  is the reference; read it before writing the validation loop.
+  autocorrelated and it leaks. **Partly done:** fitness defaults to four contiguous folds
+  with a one-month embargo, aggregated as `mean - 0.5*std`. That measures CONSISTENCY, not
+  generalisation — every fold is inside the research window and the winner was selected
+  using all of them. A true walk-forward re-runs the whole search per fold and is the next
+  thing to build (ADR-032). López de Prado's *Advances in Financial Machine Learning* is
+  still the reference.
 - Constrain the search space deliberately. An unconstrained GA over indicator
   combinations will find something that works beautifully in-sample every single time.
+  **Done:** weighted sums of cross-sectionally ranked features plus a portfolio shape —
+  19 genes, no expression trees, and `describe_genome` prints any individual as sentences
+  (ADR-031). If you widen this, widen it knowing that every added feature multiplies the
+  trial count the deflation has to discount.
 
 **Fitness should not be raw return.** Use a risk-adjusted, cost-inclusive measure, and
 penalize turnover explicitly — GAs will happily discover a strategy that trades 400 times
-a year and dies on costs.
+a year and dies on costs. **Done:** the default objective is the MONTHLY Sharpe — the same
+quantity `registry.deflate()` uses, so the search and its own significance test look at the
+same number — with optional turnover and per-feature complexity penalties. Handed raw
+return, a long-only GA finds leverage as concentration: `top_k` at its floor, ten names, a
+magnificent CAGR and a 70% drawdown.
 
 **The baselines already demonstrate this failure mode.** Under `optimistic` costs
 `random_weight` posts 11.17%/yr and the second-best Sharpe in the suite, beating 12-1
@@ -528,6 +758,10 @@ Each cost real debugging time. All are fixed; the lessons generalize.
 | `SYMBOL` ingested as a constituent for 10 months | Format validation can't catch well-formed nonsense; only an independent source can |
 | `write_text(encoding=...)` truncates the file before it fails to encode | Verify before writing, not after |
 | Ranking ties broken by `security_id` selected survivors — a zero-signal strategy scored 17.65%/yr | *Deterministic* is not *unbiased*. A tie-break is a modelling choice (ADR-024) |
+| Date ordinals computed by dividing the int64 view by 86.4e12 — pandas 2.x parses to microseconds, not nanoseconds, so a decade of filings collapsed onto one join key | Never assume a datetime's RESOLUTION. Subtract a Timestamp and take `.dt.days` |
+| Unfilled orders were charged commission, because costs were priced before the fill check | A cost with no executed order behind it is invisible until somebody lists the orders (ADR-029) |
+| Market cap from a cover-page share count that covered one share class — Simon Property at $1.7M | A wrong DENOMINATOR is worse than a wrong numerator: it puts the bad row at the top of a value ranking |
+| `shallow_mlp` kept fitted nets across runs of one instance; the forward harness runs six backtests per instance, so a 2007 research leg scored on nets trained through 2026 — and printed a 2.20 forward Sharpe | A strategy that keeps fitted state must RESET it per run: instances outlive runs, and determinism across seeds is not determinism across reuse. The impossible number is what surfaced it (ADR-037 postscript) |
 
 The third and fourth are the important ones. `verify` passed the entire time the chunk
 cache was corrupt, because the file matched its own checksum perfectly — **integrity
@@ -568,8 +802,28 @@ python -m sp500lab backtest accept
 python -m sp500lab backtest baselines
 ```
 
+```bash
+python -m sp500lab features check
+```
+
+```bash
+python -m sp500lab backtest suite all
+```
+
+```bash
+python -m sp500lab backtest trades momentum_12_1
+```
+
+```bash
+python -m sp500lab evolve run --study ga-1 && python -m sp500lab experiments deflate ga-1
+```
+
 Full command reference and troubleshooting: `docs/RUNBOOK.md`.
 The engine, end to end: `docs/BACKTEST.md`.
+The features and their leakage test: `docs/FEATURES.md`.
+The strategies and the same-window scoreboard: `docs/STRATEGIES.md`.
+The genetic algorithm: `docs/EVOLUTION.md`.
+Exporting and auditing the orders: `docs/TRADES.md`.
 Table and column reference: `docs/DATA_DICTIONARY.md`.
 Why anything is the way it is: `docs/DECISIONS.md` (28 ADRs).
 Worked query examples showing the right and wrong way: `scripts/explore.py`.

@@ -602,3 +602,37 @@ Honest list. None of these block strategy work; all of them bound what a result 
 - `docs/HANDOFF.md` — project state and the remaining TODO list
 - `docs/DATA_DICTIONARY.md` — the gold tables above
 - `docs/ARCHITECTURE.md` — the data layer underneath all of this
+
+---
+
+## What was added after this document was first written
+
+Three things, each with its own document, all of which run through this engine unchanged.
+
+**Every order is now recorded** (`result.trades`, ADR-029). The engine writes a ledger with
+the as-traded price and real share count next to the adjusted figures it computed the NAV
+from, and `trades.reconcile()` replays the cash account against it. Building it exposed two
+real bugs in this file: orders that never filled were being charged commission, and the
+per-share commission was derived from the execution day's *close* rather than its *open*.
+See [TRADES.md](TRADES.md).
+
+**Strategies can read a shared feature layer** (`ctx.feature(name)`, ADR-030). A strategy
+declaring `requires_features` gets the panel loaded automatically, and one declaring
+`min_date` has its start moved forward rather than sitting in cash for three years and
+reporting the flat stretch as performance. See [FEATURES.md](FEATURES.md).
+
+**A genetic algorithm evaluates ~0.15s per individual** (ADR-031). Nothing in the engine
+changed to make that possible; what changed is that features are precomputed and the
+fitness function slices its folds out of the equity curve rather than re-running. See
+[EVOLUTION.md](EVOLUTION.md).
+
+And one new command that matters more than it looks:
+
+```bash
+python -m sp500lab backtest suite all
+```
+
+Strategies in this project do not all cover the same window — anything built on XBRL
+fundamentals starts in 2010 — and SPY returned 10.42%/yr from 2007-04 against 15.66%/yr
+from 2010-07. `suite` puts each strategy next to the index over **its own** dates and sorts
+by the difference, because a leaderboard that sorts them together is actively misleading.
