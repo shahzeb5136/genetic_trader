@@ -696,3 +696,33 @@ def _short_claim(claim: str, limit: int = 88) -> str:
         return text
     cut = text[:limit].rsplit(" ", 1)[0]
     return cut.rstrip(" ,.;:") + "…"
+
+
+def feature_usage(names) -> Table | None:
+    """Which strategies read which shared features.
+
+    Lives here rather than in the CLI because it is a table, and every other table in
+    the report set is built in this module.
+    """
+    from ..backtest.strategy import get_strategy
+
+    rows = []
+    for name in names:
+        try:
+            strat = get_strategy(name)
+        except Exception:                                         # noqa: BLE001
+            continue
+        needed = tuple(getattr(strat, "requires_features", ()) or ())
+        rows.append([
+            _text(name),
+            Cell(str(len(needed)), len(needed)),
+            _text(", ".join(needed) if needed
+                  else "none — computes its own from the price panel",
+                  "" if needed else "muted"),
+        ])
+    if not rows:
+        return None
+    return Table(["strategy", "features", "which"], rows,
+                 aligns=["left", "right", "left"],
+                 caption="A strategy with no shared features is not worse; it is older "
+                         "than the feature layer.")

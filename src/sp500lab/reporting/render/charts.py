@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from .. import theme
 from ..series import LineSeries
-from ..specs import (AreaChart, BarChart, Heatmap, LineChart, ScatterChart)
+from ..specs import AreaChart, BarChart, Heatmap, LineChart, ScatterChart
 
 #: User-space width. Height comes from the spec. CSS scales both.
 WIDTH = 900

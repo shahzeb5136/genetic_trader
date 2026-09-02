@@ -23,8 +23,20 @@ import time
 
 from ...paths import PROJECT_ROOT
 from .. import theme
-from ..specs import (AreaChart, BarChart, Download, Heatmap, LineChart, LinkGrid,
-                     Note, Report, ScatterChart, Section, StatRow, TableBlock)
+from ..specs import (
+    AreaChart,
+    BarChart,
+    Download,
+    Heatmap,
+    LineChart,
+    LinkGrid,
+    Note,
+    Report,
+    ScatterChart,
+    Section,
+    StatRow,
+    TableBlock,
+)
 from ..tables import Table
 from . import charts
 

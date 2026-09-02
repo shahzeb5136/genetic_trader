@@ -32,13 +32,25 @@ See docs/REPORTS.md.
 
 from __future__ import annotations
 
+from .forward_views import (
+                            forward_decay_report,
+                            forward_honesty_report,
+                            forward_index_report,
+                            forward_strategy_report,
+)
 from .render.html import render as render_html
 from .render.html import write as write_html
 from .specs import Report, Section
-from .forward_views import (forward_decay_report, forward_honesty_report,
-                            forward_index_report, forward_strategy_report)
-from .views import (comparison_report, feature_report, honesty_report, index_report,
-                    registry_report, run_report, strategy_report, trades_report)
+from .views import (
+                            comparison_report,
+                            feature_report,
+                            honesty_report,
+                            index_report,
+                            registry_report,
+                            run_report,
+                            strategy_report,
+                            trades_report,
+)
 
 __all__ = [
     "Report", "Section",

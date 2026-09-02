@@ -233,11 +233,11 @@ def test_a_strategy_report_carries_the_strategy_s_own_words():
     from sp500lab.backtest import run_backtest
     from sp500lab.backtest.strategy import get_strategy
     from sp500lab.reporting import strategy_report
-    from sp500lab.reporting.cli import _claim_of
+    from sp500lab.reporting.queries import claim_of
 
     strat = get_strategy("low_vol")
     result = run_backtest(strat, start="2015-01-01", log_run=False)
-    report = strategy_report(result, claim=_claim_of(strat))
+    report = strategy_report(result, claim=claim_of(strat))
 
     assert report.title == "low_vol"
     titles = [s.title for s in report.sections]

@@ -25,8 +25,7 @@ import pandas as pd
 
 from . import series as S
 from . import theme
-from .specs import (LineChart, LinkCard, LinkGrid, Note, Report, Section, Stat,
-                    StatRow, TableBlock)
+from .specs import LineChart, LinkCard, LinkGrid, Note, Report, Section, Stat, StatRow, TableBlock
 from .tables import Cell, Table, _cell, _text
 
 

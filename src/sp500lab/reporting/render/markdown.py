@@ -28,8 +28,20 @@ from __future__ import annotations
 
 import math
 
-from ..specs import (AreaChart, BarChart, Download, Heatmap, LineChart, LinkGrid,
-                     Note, Report, ScatterChart, Section, StatRow, TableBlock)
+from ..specs import (
+    AreaChart,
+    BarChart,
+    Download,
+    Heatmap,
+    LineChart,
+    LinkGrid,
+    Note,
+    Report,
+    ScatterChart,
+    Section,
+    StatRow,
+    TableBlock,
+)
 from ..tables import Table
 
 #: Beyond this many rows a table is truncated with a note. Markdown tables stop being
