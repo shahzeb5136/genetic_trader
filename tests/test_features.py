@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from test_backtest import make_panel
 
 from sp500lab.features.panel import FeaturePanel, _as_grid, truncate_panel
 from sp500lab.strategies.signals import blend, conditional, rank_pct, require, zscore
-
-from test_backtest import make_panel
-
 
 # --------------------------------------------------------------------------
 # The scoring grammar
@@ -295,7 +293,13 @@ def test_market_cap_is_the_right_order_of_magnitude():
 
     panel = build_panel()
     fp = build_features(panel=panel)
-    caps = np.exp(fp.matrix("log_market_cap")[-1])
+    # The newest rebalance can legitimately have no prices at all: the calendar comes
+    # from the benchmark pull and the bars from the price pull, and between the two a
+    # month-end session exists with nothing traded on it. Read the last row that priced.
+    m = fp.matrix("log_market_cap")
+    rows = np.flatnonzero(np.isfinite(m).any(axis=1))
+    assert len(rows), "no rebalance has a market cap at all"
+    caps = np.exp(m[rows[-1]])
     biggest = np.nanmax(caps)
     assert 5e11 < biggest < 2e13, f"largest market cap is ${biggest:,.0f}"
     finite = caps[np.isfinite(caps)]

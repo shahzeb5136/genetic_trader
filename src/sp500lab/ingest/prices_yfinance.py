@@ -48,6 +48,97 @@ DATASET = "daily_bars"
 CHUNK_SIZE = 40          # tickers per yfinance batch request
 OHLC_COLS = ["open", "high", "low", "close", "volume"]
 
+# --------------------------------------------------------------------------
+# The integrity gate (ADR-043)
+#
+# On 2026-09-02 a routine refresh returned 34 delisted names Yahoo had never served
+# before, and a third of them were garbage: Countrywide with 895 impossible bars,
+# Titanium Metals at a $10,100 close and a +721,000% day, RadioShack missing half its
+# sessions. It also returned nothing at all for Agilent, a live constituent, which
+# silently vanished from silver. Everything downstream rebuilt without complaint and
+# the equal-weight CAGR came out at 91%/yr. `doctor` caught it; this is what stops it
+# reaching silver at all.
+# --------------------------------------------------------------------------
+
+#: Impossible OHLC rows (high < low, low > open, ...) tolerated in a LIVE member's series.
+#: The four reviewed vendor print errors (ADR-040) are one per ticker, and a current
+#: constituent with a couple of bad prints must still enter silver - rejecting it would
+#: drop a live name, and on a first pull there is nothing to carry forward. Its bad rows
+#: then show up as ERRORs in `quality` until a human reviews them into KNOWN_BAD_BARS,
+#: which is the intended workflow. A DELISTED series gets no such tolerance: it was not
+#: in the panel before, so rejecting it loses nothing, and the corrupt shells the gate
+#: exists for arrive with exactly "a few" impossible rows as often as with hundreds.
+MAX_BAD_OHLC_ROWS = 5
+#: Largest one-day |close/close - 1| a series may show INSIDE its index-membership window,
+#: on a day with no recorded split. Nothing in the S&P 500 has ever moved 400% in a
+#: session; a post-delisting shell trading at pennies routinely does, which is why the
+#: window matters - the panel clips to membership and never sees the shell.
+MAX_ABS_DAILY_RETURN = 4.0
+#: Share of sessions inside a series' own first..last span that must have a bar. A
+#: six-bar stub or a series missing half its history is not a history. Live members are
+#: exempt: a hole in a current constituent is reported by `quality`, never dropped -
+#: dropping one is the survivorship bias this whole project exists to prevent.
+MIN_SPAN_COVERAGE = 0.5
+
+
+def series_integrity(bars: pd.DataFrame, intervals: pd.DataFrame | None,
+                     calendar: pd.DataFrame | None) -> pd.DataFrame:
+    """One row per ticker: what is wrong with its series, and whether it is rejected.
+
+    Columns: ticker, bars, bad_ohlc, max_abs_ret, coverage, live, reject, reasons.
+    Pure: reads nothing from disk, so it can be dry-run on any pull in bronze.
+    """
+    b = bars.sort_values(["ticker", "date"])
+    lo = hi = live = None
+    if intervals is not None and len(intervals):
+        is_open = intervals["end_is_open"].astype(bool)
+        span = intervals.assign(end=intervals["end_date"].where(~is_open, "9999-12-31"))
+        span = span.groupby("ticker").agg(lo=("start_date", "min"), hi=("end", "max"))
+        lo, hi = span["lo"], span["hi"]
+        live = intervals.loc[is_open, "ticker"].unique()
+    live = set(live) if live is not None else set()
+    sessions = (pd.Index(calendar["date"].astype(str)) if calendar is not None
+                and len(calendar) else None)
+    has_split = "split_ratio" in b.columns
+
+    # Reviewed vendor print errors (ADR-040) are the one allowlist the gate and the
+    # quality battery share: a row a human has looked at and left in place must not
+    # count against the series that carries it, or a delisted name with one harmless
+    # bad print loses its whole index-era history to a rule meant for corrupt shells.
+    from ..quality.checks import KNOWN_BAD_BARS
+
+    rows = []
+    for t, g in b.groupby("ticker", sort=False):
+        impossible = ((g["high"] < g["low"]) | (g["high"] < g["open"]) | (g["high"] < g["close"])
+                      | (g["low"] > g["open"]) | (g["low"] > g["close"]) | (g["close"] <= 0))
+        reviewed = pd.Series([(t, d) in KNOWN_BAD_BARS for d in g["date"]], index=g.index)
+        bad = int((impossible & ~reviewed).sum())
+        inside = g
+        if lo is not None and t in lo.index:
+            inside = g[(g["date"] >= lo[t]) & (g["date"] <= hi[t])]
+        ret = inside["close"].pct_change().abs()
+        if has_split:
+            split_day = inside["split_ratio"].fillna(0).gt(0) & inside["split_ratio"].ne(1.0)
+            ret = ret[~split_day.to_numpy()]
+        max_ret = float(ret.max()) if len(ret) and ret.notna().any() else 0.0
+        if sessions is not None and len(g):
+            expected = len(sessions[(sessions >= g["date"].min()) & (sessions <= g["date"].max())])
+            coverage = len(g) / max(expected, 1)
+        else:
+            coverage = 1.0
+        reasons = []
+        if bad > (MAX_BAD_OHLC_ROWS if t in live else 0):
+            reasons.append(f"{bad} impossible OHLC rows")
+        if max_ret > MAX_ABS_DAILY_RETURN:
+            reasons.append(f"a {max_ret:.0%} day inside membership")
+        if coverage < MIN_SPAN_COVERAGE and t not in live:
+            reasons.append(f"{coverage:.0%} of sessions in its own span")
+        rows.append({"ticker": t, "bars": len(g), "bad_ohlc": bad,
+                     "max_abs_ret": round(max_ret, 3), "coverage": round(coverage, 3),
+                     "live": t in live, "reject": bool(reasons),
+                     "reasons": "; ".join(reasons)})
+    return pd.DataFrame(rows)
+
 
 def resolve_universe(mode: str = "ever") -> pd.DataFrame:
     """Tickers to download.
@@ -106,12 +197,23 @@ def run(
     start: str | None = None,
     end: str | None = None,
     limit: int | None = None,
+    ingest_date: str | None = None,
 ) -> IngestResult:
+    """Fetch (or replay) every chunk, gate each series, and write silver.
+
+    `ingest_date` names which bronze partition to build from. Default is today, which
+    fetches anything not yet on disk. Passing an earlier date re-parses THAT pull with
+    zero network - the way to roll silver back to a validated state after a refresh
+    turns out to be bad, and the reason bronze is partitioned by fetch date at all.
+    """
     import yfinance as yf
 
     res = IngestResult(source=SOURCE, dataset=DATASET)
     start = start or get_settings().price_start
-    ingest_date = today_iso()
+    replay = ingest_date is not None
+    ingest_date = ingest_date or today_iso()
+    if replay:
+        log.info("re-parsing the %s pull from bronze; nothing will be fetched", ingest_date)
 
     uni = resolve_universe(universe)
     if limit:
@@ -126,6 +228,20 @@ def run(
     chunks = [tickers[i:i + CHUNK_SIZE] for i in range(0, len(tickers), CHUNK_SIZE)]
     frames: list[pd.DataFrame] = []
     empty_tickers: list[str] = []
+
+    if replay:
+        # Everything that pull wrote, whatever the request keys were. The universe may
+        # have changed since, so the chunk boundaries and filenames need not match;
+        # the partition IS the pull.
+        partition = bronze_path(SOURCE, DATASET, ingest_date, "x").parent
+        files = sorted(partition.glob("bars_chunk_*.parquet"))
+        if not files:
+            res.errors.append(f"no price chunks in bronze for {ingest_date} ({partition})")
+            return res
+        frames = [pd.read_parquet(p) for p in files]
+        res.from_cache = len(files)
+        log.info("replaying %d chunk(s) from %s", len(files), partition)
+        chunks = []                       # nothing to fetch
 
     for ci, chunk in enumerate(chunks, 1):
         # The filename encodes the REQUEST, not just the chunk index. Keying on the
@@ -151,6 +267,10 @@ def run(
                 frames.append(cached)
                 res.from_cache += 1
                 continue
+        if replay:
+            res.errors.append(f"chunk {ci}: no artifact for {ingest_date} - not fetching "
+                              "during a replay")
+            continue
 
         syms = [yf_symbol[t] for t in chunk]
         try:
@@ -203,39 +323,89 @@ def run(
     allbars = (allbars.sort_values(["ticker", "date"])
                .drop_duplicates(subset=["ticker", "date"], keep="last"))
 
+    # ---- the integrity gate: a corrupt series never reaches silver ------------
+    intervals = (read_silver("reference/sp500_membership_intervals")
+                 if silver_exists("reference/sp500_membership_intervals") else None)
+    calendar = (read_silver("reference/trading_calendar")
+                if silver_exists("reference/trading_calendar") else None)
+    verdict = series_integrity(allbars, intervals, calendar)
+    rejected = verdict[verdict["reject"]]
+    if len(rejected):
+        for r in rejected.itertuples():
+            log.warning("REJECTED %s: %s", r.ticker, r.reasons)
+        write_bronze(source=SOURCE, dataset=DATASET, filename="rejected_tickers.json",
+                     content=rejected.to_json(orient="records", indent=2).encode(),
+                     url="(integrity gate, ADR-043)", ingest_date=ingest_date)
+        res.bronze_files += 1
+    good = allbars[~allbars["ticker"].isin(set(rejected["ticker"]))]
+
     bar_cols = ["security_id", "ticker", "date"] + \
-               [c for c in OHLC_COLS if c in allbars.columns] + \
-               [c for c in ["adj_close_vendor"] if c in allbars.columns]
-    bars = allbars[bar_cols].copy()
+               [c for c in OHLC_COLS if c in good.columns] + \
+               [c for c in ["adj_close_vendor"] if c in good.columns]
+    bars = good[bar_cols].copy()
     bars["source"] = SOURCE
     bars["ingest_date"] = ingest_date
-    write_silver(bars, "market/daily_bars")
 
     # Corporate actions as discrete events, kept apart from prices.
     actions: list[pd.DataFrame] = []
-    if "dividend" in allbars.columns:
-        d = allbars.loc[allbars["dividend"].fillna(0) > 0,
-                        ["security_id", "ticker", "date", "dividend"]].copy()
+    if "dividend" in good.columns:
+        d = good.loc[good["dividend"].fillna(0) > 0,
+                     ["security_id", "ticker", "date", "dividend"]].copy()
         d = d.rename(columns={"dividend": "value"})
         d["action_type"] = "dividend"
         actions.append(d)
-    if "split_ratio" in allbars.columns:
-        s = allbars.loc[(allbars["split_ratio"].fillna(0) > 0)
-                        & (allbars["split_ratio"] != 1.0),
-                        ["security_id", "ticker", "date", "split_ratio"]].copy()
+    if "split_ratio" in good.columns:
+        s = good.loc[(good["split_ratio"].fillna(0) > 0) & (good["split_ratio"] != 1.0),
+                     ["security_id", "ticker", "date", "split_ratio"]].copy()
         s = s.rename(columns={"split_ratio": "value"})
         s["action_type"] = "split"
         actions.append(s)
+    ca = pd.concat(actions, ignore_index=True) if actions else pd.DataFrame(
+        columns=["security_id", "ticker", "date", "action_type", "value"])
+    ca["source"] = SOURCE
 
-    if actions:
-        ca = pd.concat(actions, ignore_index=True)
-        ca["source"] = SOURCE
-        ca = ca[["security_id", "ticker", "date", "action_type", "value", "source"]]
-        ca = ca.sort_values(["ticker", "date", "action_type"]).reset_index(drop=True)
-        write_silver(ca, "market/corporate_actions")
-        res.notes["corporate_actions"] = len(ca)
-        res.notes["dividends"] = int((ca["action_type"] == "dividend").sum())
-        res.notes["splits"] = int((ca["action_type"] == "split").sum())
+    # ---- carry-forward: a vendor hiccup never deletes a validated series -------
+    # A ticker that was in silver last time and is absent (or rejected) this time keeps
+    # its previous rows. Losing a live constituent to one bad response is survivorship
+    # bias arriving through the back door; the rows it had already passed every check.
+    # A replay is a rollback: the caller has decided the current silver is NOT to be
+    # trusted, so nothing is carried forward from it. Silver becomes that pull alone.
+    carried: list[str] = []
+    if not replay and silver_exists("market/daily_bars"):
+        prev = read_silver("market/daily_bars")
+        wanted = set(tickers)
+        have = set(bars["ticker"].unique())
+        carry = sorted((set(prev["ticker"].unique()) & wanted) - have)
+        if carry:
+            bars = pd.concat([bars, prev[prev["ticker"].isin(carry)][bars.columns]],
+                             ignore_index=True)
+            if silver_exists("market/corporate_actions"):
+                prev_ca = read_silver("market/corporate_actions")
+                ca = pd.concat([ca, prev_ca[prev_ca["ticker"].isin(carry)][ca.columns]],
+                               ignore_index=True)
+            carried = carry
+            log.warning("carried forward %d ticker(s) from the previous silver: %s",
+                        len(carry), ", ".join(carry[:12]) + (" ..." if len(carry) > 12 else ""))
+            write_bronze(source=SOURCE, dataset=DATASET,
+                         filename="carried_forward_tickers.json",
+                         content=json.dumps(carry, indent=2).encode(),
+                         url="(carry-forward, ADR-043)", ingest_date=ingest_date)
+            res.bronze_files += 1
+
+    bars = (bars.sort_values(["ticker", "date"])
+            .drop_duplicates(subset=["ticker", "date"], keep="first").reset_index(drop=True))
+    write_silver(bars, "market/daily_bars")
+
+    ca = ca[["security_id", "ticker", "date", "action_type", "value", "source"]]
+    ca = (ca.sort_values(["ticker", "date", "action_type"])
+          .drop_duplicates(subset=["security_id", "date", "action_type"], keep="first")
+          .reset_index(drop=True))
+    write_silver(ca, "market/corporate_actions")
+    res.notes["corporate_actions"] = len(ca)
+    res.notes["dividends"] = int((ca["action_type"] == "dividend").sum())
+    res.notes["splits"] = int((ca["action_type"] == "split").sum())
+    res.notes["rejected_tickers"] = {r.ticker: r.reasons for r in rejected.itertuples()}
+    res.notes["carried_forward_tickers"] = carried
 
     if empty_tickers:
         write_bronze(source=SOURCE, dataset=DATASET, filename="no_data_tickers.json",

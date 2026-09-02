@@ -89,11 +89,23 @@ traded. Applying split factors again double-counts by 10×, and the failure is *
 looks like alpha. Handled via `SOURCE_CONVENTION = split_adjusted`. See ADR-007.
 
 **Other gotchas**
-- **Coverage is 69.6% of ever-members** (677 / 973). Delisted names are largely absent — LEH,
-  XTO, ZMH, YHOO all return nothing. This is the single largest known weakness and the exact
-  reason to buy a paid feed.
+- **Usable coverage is 64.4% of ever-members** (625 / 971 with at least one bar inside
+  their membership window). Delisted names are largely absent — LEH, XTO, ZMH, YHOO all
+  return nothing — and 48 more come back as a *different company's* history under the
+  same symbol with not one bar inside the index era (MI left in 2011; "its" bars start
+  2015). This is the single largest known weakness and the exact reason to buy a paid feed.
 - **Ticker recycling is not handled by the vendor.** CPWR returns an OTC shell's prices
-  (0–50 shares/day) spliced onto Compuware's index-era history. 155 tickers affected.
+  (0–50 shares/day) spliced onto Compuware's index-era history. 155 tickers and 252,356
+  bars affected; `quality` reports both the recycled and the phantom cases.
+- **What it returns for a dead symbol changes between pulls, and some of it is garbage.**
+  A 2026-09-02 refresh served 34 delisted names it had never served before — a third of
+  them with impossible bars, +700,000% days or a handful of sessions — and returned
+  nothing for one live constituent. `ingest prices` now gates every series and carries a
+  vanished ticker forward from the last validated rows (ADR-043). Read
+  `rejected_tickers.json` after every refresh.
+- **It restates whole histories.** Amphenol and Leggett & Platt came back different on
+  every bar between two pulls a week apart. Our own factor chain makes that harmless for
+  returns (ADR-006); it is still a reason to keep every pull in bronze.
 - Unofficial API. It can break without notice; it is not licensed for redistribution.
 - Bypasses `http_cache` (manages its own session); fetch-once is enforced at the bronze-artifact
   level instead.
@@ -126,6 +138,47 @@ Do not use them for pre-2023 regime tagging — a full history needs a FRED API 
 source.
 
 Setting `FRED_API_KEY` unlocks the JSON API and ALFRED vintages, but nothing here requires it.
+
+---
+
+### Kenneth French data library — factor returns
+
+| | |
+|---|---|
+| Cost | Free, no key |
+| Endpoint | `mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/*.zip` |
+| Refresh | Monthly upstream, with ~2 months of lag; cached 7 days |
+
+The five Fama-French factors (`Mkt-RF`, `SMB`, `HML`, `RMW`, `CMA`), the one-month T-bill
+(`RF`) and momentum (`Mom`), daily. 26,173 sessions: momentum from 1926-11, the five
+factors from 1963-07. Stored wide, in **decimals**, as `factors/fama_french_daily`.
+
+What they are for: a regression of any strategy's monthly returns on these columns says
+whether it was a factor bet in disguise, and a daily-rebalanced idea can hedge `Mkt-RF`
+and `SMB` out of its exposure. They are also the third cross-source check on the price
+data — `Mkt-RF + RF` is the whole CRSP market and SPY tracks it above 0.98.
+
+**Gotchas**
+- The zips hold a CSV with a free-text preamble and a copyright trailer of no fixed
+  length. `parse_factor_csv` finds the header row by its column names; a layout change
+  fails loudly.
+- Values are published in **percent**; `-99.99` marks a missing print. Both are handled
+  at parse time, and `quality.checks.check_factor_sanity` errors if a column is ever
+  left in percent.
+- The library revises the most recent months as CRSP finalises delistings. A backtest
+  that uses last month's factor print is using a number that may move slightly.
+
+---
+
+### Yahoo Finance — benchmarks and regime series
+
+The same `yfinance` path as the price panel, for 29 series that are never index
+constituents (`ingest/benchmarks.py::BENCHMARKS`): SPY and its relatives, the eleven
+GICS sector SPDRs, the VIX 9-day and 3-month term structure, Treasuries at three tenors,
+IG and HY credit, gold, the dollar, commodities, the Nasdaq-100, mid caps and the total
+market. The trading calendar is derived from SPY alone; the others may start later
+(XLC 2018, XLRE 2015, HYG 2007) and ^VIX prints on a couple of days the ETFs did not
+trade, which the quality battery reports as INFO.
 
 ---
 

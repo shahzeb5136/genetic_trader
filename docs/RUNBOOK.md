@@ -41,13 +41,47 @@ Refresh prices and re-derive adjustments:
 python -m sp500lab ingest prices && python -m sp500lab normalize
 ```
 
+Every returned series goes through an integrity gate before silver (ADR-043): a series
+with more than five impossible OHLC rows, a >400% day inside its membership window on a
+non-split day, or under half its own sessions present is **rejected** and listed in
+`bronze/yfinance/daily_bars/ingest_date=<today>/rejected_tickers.json`. A ticker that
+was in silver last time and comes back empty or rejected keeps its previous rows
+(`carried_forward_tickers.json`, and a WARNING in the log). Read both files after a
+refresh; then rebuild the derived layers in the order below and run `doctor`.
+
+If a refresh still turns out bad, roll silver back to any earlier pull with zero
+network — bronze keeps every pull, partitioned by fetch date:
+
+```bash
+python -m sp500lab ingest prices --from-bronze 2026-08-27
+```
+
+A replay rebuilds silver from that pull alone (nothing is carried forward from the silver
+you are replacing, because that is exactly what you do not trust).
+
 Check what exists and how big it is:
 
 ```bash
 python -m sp500lab status
 ```
 
-Run quality checks (add `--strict` to exit non-zero on any ERROR, for CI):
+Run every check across the data and the algorithms, with one exit code — the bronze
+re-hash, the silver battery strict on ERROR, the engine acceptance suite, the timing
+engine's identities, and the feature-leakage rebuild (about 2.5 minutes):
+
+```bash
+python -m sp500lab doctor
+```
+
+```bash
+python -m sp500lab doctor --fast        # skip the two slow stages; a commit hook
+```
+
+```bash
+python -m sp500lab doctor --roster      # also every strategy: contract + no-lookahead
+```
+
+Run the data-quality battery on its own (add `--strict` to exit non-zero on any ERROR):
 
 ```bash
 python -m sp500lab quality
@@ -79,12 +113,16 @@ python -m sp500lab query "SELECT ticker, count(*) n FROM daily_bars GROUP BY 1 O
 sec-tickers  ──►  wiki-current  ──►  wiki-history  ──►  prices  ──►  fundamentals
                                           │
                                      benchmarks (trading calendar)
+                                     fred, fama-french (independent)
 ```
 
 - `sec-tickers` seeds the security master; run it first or tickers won't map to CIKs.
 - `wiki-history` builds the membership intervals that `prices --universe ever` reads.
 - `benchmarks` produces the trading calendar; `quality` needs it to distinguish a data gap
-  from a market holiday.
+  from a market holiday. **Refreshing benchmarks moves the calendar's end**, so follow it
+  with `prices` or the newest sessions have no bars and `quality` says so.
+- `fred` and `fama-french` depend on nothing and nothing depends on them; `quality` uses
+  both for cross-source checks against the benchmarks.
 - `normalize` must run after `prices`.
 
 ---
@@ -143,12 +181,24 @@ python -m sp500lab backtest build-spreads
 Then the gate. **Do not trust any backtest number until this passes:**
 
 ```bash
-python -m sp500lab backtest accept
+python -m sp500lab doctor
 ```
 
-Six checks, ~15 seconds. The headline is check 1: buy-and-hold SPY through the engine must
-reproduce SPY's real total return (8.32%/yr) to a few basis points. It currently matches to
-0.2bp.
+That runs the engine's acceptance suite alongside every data check. The engine suite on
+its own is `backtest accept`, ~15 seconds: the headline is check 1, buy-and-hold SPY
+through the engine must reproduce SPY's real total return (8.32%/yr) to a few basis
+points. It currently matches to 0.2bp.
+
+Before a release, or after touching any strategy:
+
+```bash
+python -m sp500lab backtest accept --strategies all
+```
+
+Checks 6 and 7 over the whole roster — every strategy runs and produces a portfolio,
+and none of them changes its weights when the panel is truncated just past the window
+(the lookahead check `context.py` cannot make, because `on_start` sees the whole panel).
+A few minutes; `--include-learned` adds the model-training family.
 
 ### Daily use
 
@@ -217,13 +267,19 @@ python -m sp500lab backtest build-panel
 ```
 
 ```bash
-python -m sp500lab backtest accept
+python -m sp500lab features build --rebuild
+```
+
+```bash
+python -m sp500lab doctor
 ```
 
 `build-panel` rebuilds and re-caches (~11s). The cache key is a hash of the build
 parameters, **not** of the underlying data, so silver changes do **not** invalidate it
 automatically — you must rebuild explicitly. That is the one manual step in an otherwise
-idempotent pipeline, and forgetting it means backtesting yesterday's data.
+idempotent pipeline, and forgetting it means backtesting yesterday's data. The feature
+cache is keyed on the panel's actual extent (ADR-041), so a rebuilt panel with a new end
+date gets fresh features; `--rebuild` forces it regardless.
 
 ### Reading the diagnostics
 

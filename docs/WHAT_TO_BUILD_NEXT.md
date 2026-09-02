@@ -22,6 +22,16 @@ No code changes. This is the plan.
 > exactly as written: `selection_bar()` now counts 38 forward-tested candidates and the
 > bar rose accordingly. #1 no-trade bands, #3 HRP, #4 sectors, #5 short interest and the
 > walk-forward remain open, and the walk-forward remains the most important.
+>
+> **Status update, 2026-09-02 (ADR-041/042).** Two data additions change the inputs
+> available to several entries without building any of them: daily **Fama-French factor
+> returns** (`factors/fama_french_daily`, from 1926) and **24 more benchmark series** — the
+> eleven GICS sector SPDRs, the VIX term structure, and a cross-asset regime set. #4's
+> sector *rotation* half can now be expressed on ETFs before point-in-time constituent
+> sectors exist; #10 and #11 have external series to validate against; and every family
+> can be regressed on the factors to ask whether it is a factor bet in disguise. Every
+> strategy also now passes a no-lookahead check (ADR-041), which is what any new family
+> will be held to on arrival.
 
 ---
 
@@ -165,7 +175,7 @@ four-library discipline, hand-rolled.
 
 ## Tier 2 — New information
 
-Genuinely additive: things not currently in the 75 features, all obtainable free.
+Genuinely additive: things not currently in the 79 features, all obtainable free.
 
 ### 4. Point-in-time GICS sectors — TODO-6, already scoped
 
@@ -201,7 +211,7 @@ Two derived signals, both well documented:
 - **Days to cover** (short interest / average daily volume) — a crowding measure, and the
   input to a squeeze.
 
-Genuinely new information: nothing in the current 75 features overlaps with it. Bi-monthly
+Genuinely new information: nothing in the current 79 features overlaps with it. Bi-monthly
 frequency suits a monthly rebalance. Coverage is good for index constituents.
 
 *Effort*: one ingester following the existing `base.py` pattern, plus two features.
@@ -229,7 +239,7 @@ This is where "neural nets" belongs, and it is the third tier for a reason.
 
 ### 7. Gradient-boosted trees
 
-Predict next-month cross-sectional return rank from the 75 features. Refit on an expanding
+Predict next-month cross-sectional return rank from the 79 features. Refit on an expanding
 window at each rebalance — the discipline is already implemented in
 `strategies/learned.py::RollingRidge`, where the hard part (no training label reaching the
 as-of date) is solved.
@@ -272,7 +282,7 @@ The cheapest idea in this document and possibly the best.
 
 Twenty strategies already produce a score per stock per month. Rank-average them. Or weight
 them by trailing performance. Or stack: fit a model whose *inputs are the twenty scores*
-rather than the 75 features.
+rather than the 79 features.
 
 Ensembles beat their members almost universally, and this one requires no new data, no new
 dependency and no new features — the scores already exist. It is also the most honest use
@@ -441,7 +451,7 @@ is knowledge — and that is what this harness was built to produce.
 ---
 
 **See also:** [HOW_THE_GA_WORKS.md](HOW_THE_GA_WORKS.md) · [FEATURES.md](FEATURES.md) for
-what the 75 features already cover · [STRATEGIES.md](STRATEGIES.md) for the current bar ·
+what the 79 features already cover · [STRATEGIES.md](STRATEGIES.md) for the current bar ·
 [ADDING_A_STRATEGY.md](ADDING_A_STRATEGY.md) for the interface any of these would implement
 · [FORWARD_TEST.md](FORWARD_TEST.md) for how any of them eventually gets checked out of
 sample, and why 54 months can refute one but not confirm it

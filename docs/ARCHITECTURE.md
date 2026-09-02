@@ -9,7 +9,7 @@
    Wikipedia      │    http_cache        │           + sha256          DuckDB
    Yahoo Finance  ├──► fetch-once   ────►├─ silver/  normalized  ────► views over
    FRED           │    rate-limited      │           parquet           parquet
-   FINRA          ┘    retried           ├─ gold/    features
+   Ken French     ┘    retried           ├─ gold/    features
                                          └─ vault/   paid-window
 ```
 
@@ -51,7 +51,8 @@ Two physically separate stores, because they have completely different risk prof
 The query layer stitches them together. The point is that **your code keeps working the day
 your API key dies** — which it will, deliberately, as part of the funding model.
 
-`vault/` is empty today. It fills when the first paid download happens.
+`vault/` holds EODHD's two symbol lists today (free tier, but rate-limited hard enough
+that re-fetching is a real cost). It fills properly when the first paid download happens.
 
 ---
 
@@ -167,7 +168,7 @@ of mourning in December 2018) and marks them as missing bars.
 
 This distinction is load-bearing: a gap in a stock's history is a **data quality problem**,
 while a gap on a non-trading day is **nothing at all**. Without a trustworthy calendar the
-two are indistinguishable. Result: 6,702 sessions, median 252/year.
+two are indistinguishable. Result: 6,706 sessions, median 252/year.
 
 ---
 
@@ -175,16 +176,42 @@ two are indistinguishable. Result: 6,702 sessions, median 252/year.
 
 The whole thing is small enough to be boring, which is the point — no cloud, no cluster.
 
-| Layer | Size |
+| Layer | Size (2026-09-02) |
 |---|---|
-| bronze (raw, incl. SEC JSON) | ~800 MB and growing with fundamentals |
-| silver (normalized parquet) | ~245 MB |
-| http cache | ~810 MB |
+| bronze (raw, incl. SEC JSON and every price pull) | ~2.4 GB |
+| silver (normalized parquet) | ~350 MB |
+| vault (EODHD symbol lists) | ~15 MB |
+| http cache | ~2.5 GB |
 
 DuckDB reads parquet directly with predicate pushdown, so a filtered query over 3.5M bars
 touches only the columns and row groups it needs. The entire project fits on a USB stick.
 
 ---
+
+---
+
+## Quality: every layer is checked, and one command runs all of it
+
+```
+   sp500lab doctor                          stage        what it proves
+   ───────────────                          ─────        ──────────────
+   storage.verify_manifest        ───►      bronze       every byte is the byte that was fetched
+   quality.checks.run             ───►      silver       schema contracts, per-table invariants,
+                                                         three cross-source agreements
+   backtest.accept.run_all        ───►      engine       SPY to 0.2bp, the EW identity, the leakage
+                                                         guard, determinism, dividends once
+   timing.engine.timing_accept    ───►      legs         overnight x intraday == buy-and-hold
+   features.check_leakage         ───►      features     rebuilt with the future deleted: identical
+   accept.run_strategy_checks     ───►      roster       every strategy runs; none changes its
+   (--roster)                                            weights when the panel is truncated
+```
+
+Three ideas carry the weight. **A crashing check is a finding, not a skipped stage.**
+**Two vendors who do not know about each other agreeing** (FRED against Yahoo on the
+VIX, SPY against ^GSPC, SPY against the Fama-French market) is the cheapest evidence
+there is that a series is what it claims to be. And **reviewed defects are allowlisted
+by row, never repaired** (ADR-040), so `--strict` fails only on something nobody has
+looked at. Full run 2.5 minutes; the data battery alone is `sp500lab quality`.
 
 ---
 
@@ -251,12 +278,18 @@ looks cannot quietly change what it shows. See ADR-028 and `docs/REPORTS.md`.
 
 ## What is deliberately absent
 
-The **feature layer** and everything downstream of it:
+- **A walk-forward harness** with purging and an embargo. The forward-test harness
+  evaluates a *fixed* candidate after 2022; a walk-forward re-runs the *search* inside the
+  research window. The second is the only honest evaluation loop left now that the holdout
+  is spent (HANDOFF §5), and it is the next thing to build.
+- **Point-in-time sectors and market cap from a paid source** (TODO-5/6). Sector ETFs
+  exist as benchmarks; constituent-level sectors are current-only.
+- **The 296 delisted names Yahoo cannot supply** (TODO-8). Everything the pipeline does
+  is built so that the day a paid feed lands, the same commands rebuild and the same
+  checks say whether the result can be trusted.
 
-- `gold/` feature matrices and labels, versioned, with leakage tests (TODO-4)
-- a walk-forward harness with purging and an embargo
-- the genetic algorithms and neural networks themselves
-
-The engine deliberately shipped before the features so that the fitness function exists
-before anything is optimised against it. Building the search before the scoreboard means
-debugging two things at once — the same reason the data layer came before the engine.
+Everything that was on this list when the engine shipped — the feature layer, the
+genetic algorithm, the neural net, the forward harness — has since been built, and each
+arrived with its own check: `features check`, the deflated Sharpe, the seal, and now
+check 7. The order was deliberate: the fitness function existed before anything was
+optimised against it, and the checks existed before anything was trusted.

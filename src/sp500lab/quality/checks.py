@@ -767,10 +767,24 @@ def check_referential_integrity(master: pd.DataFrame, tables: dict[str, pd.DataF
     return out
 
 
-def check_membership_intervals(iv: pd.DataFrame) -> list[dict]:
+def check_membership_intervals(iv: pd.DataFrame,
+                               current: pd.DataFrame | None = None) -> list[dict]:
+    """Invariants of the point-in-time universe, plus the one cross-check that would
+    have caught ADR-044: every ticker in today's constituent list must be an OPEN
+    member in the intervals. The two tables come from different parsers, so a name one
+    of them silently drops is visible only by comparing them."""
     out = []
     ent = "reference/sp500_membership_intervals"
     is_open = iv["end_is_open"].astype(bool)
+    if current is not None and len(current):
+        open_now = set(iv.loc[is_open, "ticker"])
+        missing = sorted(set(current["ticker"].astype(str)) - open_now)
+        if missing:
+            out.append(_finding("membership", ERROR, ent,
+                                f"{len(missing)} current constituent(s) have no open "
+                                "membership interval - the point-in-time universe is "
+                                "missing a live member", rows=len(missing),
+                                sample=", ".join(missing[:8])))
     closed = iv[~is_open]
     inverted = closed["end_date"].notna() & (closed["end_date"] < closed["start_date"])
     if inverted.any():
@@ -1378,7 +1392,8 @@ def run(*, verify_bronze: bool = True) -> pd.DataFrame:
                      "reference/sp500_membership_intervals": iv,
                      "fundamentals/xbrl_facts": xbrl}))
     if iv is not None:
-        _safe(findings, "membership", lambda: check_membership_intervals(iv))
+        current = _load("reference/sp500_current")
+        _safe(findings, "membership", lambda: check_membership_intervals(iv, current))
     snaps = _load("reference/sp500_membership_snapshots")
     if snaps is not None:
         _safe(findings, "membership_sanity", lambda: check_membership_sanity(snaps))

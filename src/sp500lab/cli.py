@@ -75,7 +75,8 @@ def cmd_ingest(args) -> int:
         "fama-french":  lambda: fama_french.run(force=args.force),
         "prices":       lambda: prices_yfinance.run(force=args.force,
                                                     universe=args.universe,
-                                                    start=args.start, limit=args.limit),
+                                                    start=args.start, limit=args.limit,
+                                                    ingest_date=args.from_bronze),
         "fundamentals": lambda: sec_companyfacts.run(force=args.force,
                                                      universe=args.universe,
                                                      limit=args.limit,
@@ -249,6 +250,9 @@ visualise it (docs/REPORTS.md):
                    help="'ever' = survivorship-free; 'current' = today's members only")
     i.add_argument("--all-tags", action="store_true",
                    help="fundamentals: keep every XBRL tag, not the curated set")
+    i.add_argument("--from-bronze", default=None, metavar="YYYY-MM-DD",
+                   help="prices: re-parse the pull made on this date from bronze, fetching "
+                        "nothing - rolls silver back to a validated pull (ADR-043)")
     i.set_defaults(func=cmd_ingest)
 
     n = sub.add_parser("normalize", help="compute corporate-action adjustment factors")

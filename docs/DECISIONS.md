@@ -1525,3 +1525,214 @@ Four `slugify` implementations under three names, two `_gt`/`_lt` pairs and two
 `views._gt(inf, 0)` disagreed with `forward_views._gt(inf, 0)`. 377 tests pass; the full
 report set, the Algorithm Book and the Calendar Lab rebuild and every index link
 resolves.
+
+---
+
+## ADR-040 — Reviewed vendor errors are allowlisted, not repaired and not ignored
+
+**Status:** accepted (2026-09-02)
+
+**Context.** Four bars out of 3.7 million are structurally impossible at the vendor: three
+where `low > open` by a few cents (HUBB and UA on the same day, 2021-05-05; SAF on
+2021-08-30) and one zero open (NAVIV, 2014-04-30). TODO-9 asked for a decision — drop,
+repair, or leave — and until one was made `quality --strict` could not gate anything,
+because it would fail forever on rows nobody was going to fix.
+
+**Decision.** Leave the rows as received, list them in `quality.checks.KNOWN_BAD_BARS`
+with a one-line reason each, and report them as WARN instead of ERROR. Any *new*
+impossible bar is still an ERROR. Nothing is repaired: the engine executes at the open
+and marks at the close, the zero open is filled from the close and counted, and the
+spread estimator that reads high/low is a 21-session trailing median — none of the four
+can move a result. Repairing them would put an invented number into silver, which is
+worse than a documented wrong one.
+
+**Consequence.** `sp500lab quality --strict` now exits 0 on the real lake and can gate a
+pipeline. The allowlist is the contract: everything on it has been looked at, and adding
+to it without looking is the one way to break the check without the check noticing.
+
+---
+
+## ADR-041 — Every strategy is checked, and every check runs from one command
+
+**Status:** accepted (2026-09-02)
+
+**Context.** The acceptance suite proved the engine: SPY total return, the equal-weight
+identity, the leakage guard, determinism, dividends counted once. It proved nothing about
+the twenty-five strategies plugged into it. A strategy that trained a model in
+`on_start(panel)` on rows past its as-of date would pass all five — `on_start` sees the
+whole panel by design, and `context.py` cannot bound it — and `shallow_mlp` did exactly
+that in revision 1 (ADR-037 postscript). The checks also lived in five places, and it
+was easy to run four of them.
+
+**Decision.** Two checks over the roster in `backtest/accept.py`:
+
+* **Check 6, contract.** Each strategy runs twice on 2012–2014 (~36 rebalances). The
+  curve must be finite and positive, no weight row all-NaN, no negative weight or leverage
+  past validation, both runs byte-identical, net NAV no higher than gross, turnover in
+  [0, 1], and the trade ledger must reconcile.
+* **Check 7, no lookahead.** Each strategy runs on the full panel and again on a copy
+  physically truncated five sessions past the window with every later filing and macro
+  print deleted (`truncate_panel` plus `build_features(data_cutoff=...)`). The target
+  weights at every rebalance must be bit-identical — the same standard `check_leakage`
+  holds features to. A difference means the strategy read data past its as-of date.
+
+And one command, `sp500lab doctor`, that runs everything in cost order with one exit code:
+the bronze re-hash, the silver battery strict on ERROR, the engine suite, the timing
+engine's identities, the feature-leakage rebuild, and with `--roster` checks 6 and 7. A
+stage that raises is a failed stage. Full run 2.5 minutes; `--fast` skips the two slow
+stages for a commit hook.
+
+**A bug this found.** The feature cache key read `n_dates` and `end` from `panel.meta`,
+which `truncate_panel` does not update. A truncated panel therefore hashed to the same
+key as the full one, and the engine's auto-load path could hand a truncated run the full
+panel's cached features — the exact leak the truncation exists to detect. `check_leakage`
+had sidestepped it with `use_cache=False`; check 7 could not. The key now reads the
+arrays. One feature rebuild.
+
+**Result.** All 25 strategies pass both checks. The learned family is opt-in
+(`--include-learned`) because it trains a model per run.
+
+---
+
+## ADR-042 — Factor returns and a regime set join the data layer
+
+**Status:** accepted (2026-09-02)
+
+**Context.** Every strategy is scored against SPY, which answers "did it beat the index"
+and nothing more. The next question — was it a factor bet in disguise — needs factor
+returns, and a daily-rebalanced idea needs cross-asset and sector series the five
+benchmarks did not carry. Both are free.
+
+**Decision.** `ingest/fama_french.py` pulls the five Fama-French factors plus momentum,
+daily since 1926, from the Ken French library — keyless zips with a free-text preamble,
+parsed by finding the header row rather than trusting a line count — into
+`factors/fama_french_daily`, wide, in decimals. `benchmarks.BENCHMARKS` grows from 5 to 29:
+the eleven GICS sector SPDRs, the VIX 9-day and 3-month term structure, Treasuries at
+three tenors, investment-grade and high-yield credit, gold, the dollar, commodities, the
+Nasdaq-100, mid caps and the total market. The calendar is still derived from SPY alone.
+
+**The check that came with it.** `Mkt-RF + RF` is CRSP's value-weighted total market
+return; SPY's daily total return tracks it above 0.98 with a slope near 1. Asserting
+both catches a lost decimal in the factor parser (percent left undivided gives
+correlation ~1 with slope ~0.01) as surely as a shifted SPY series. It is the third
+cross-source check, after VIX (FRED against Yahoo) and SPY against ^GSPC, and it is the
+cheapest kind of check there is: two vendors who do not know about each other agreeing.
+
+**What was measured on arrival.** 26,173 sessions, five factors from 1963-07-01, Mkt-RF
+annualising to 7.32%, and the library lags about two months — data through 2026-06-30 on
+2026-09-02. Re-ingesting benchmarks moved the calendar's last session from 2026-08-26 to
+2026-09-01, which is why a benchmark refresh must be followed by a price refresh: the
+calendar is the spine, and a session with no bars is a WARN the quality battery reports.
+
+**Not done.** The 296 ever-members without prices stay missing. EODHD's delisted list
+carries 277 of them, but the free tier returns one year of history per call at twenty
+calls a day, which cannot backfill 2007. That remains the paid-plan purchase (TODO-8) and
+the single largest limitation on every early-year number here.
+
+---
+
+## ADR-043 — The price ingester gates every series, and a rollback is a replay from bronze
+
+**Status:** accepted (2026-09-02)
+
+**Context.** The routine price refresh that followed ADR-042 came back different in
+three ways at once, and `doctor` caught all three. Yahoo returned 34 delisted names it
+had never served before, about a third of them corrupt — Countrywide with 895 impossible
+bars and a +449,900% day, Titanium Metals at a $10,100 close, RadioShack missing half
+its sessions, Merrill Lynch as two bars. It returned nothing for Agilent, a live
+constituent, which silently vanished from silver. And it restated Amphenol and Leggett &
+Platt end to end, which is the vendor rewriting history that ADR-006 exists for.
+Everything downstream rebuilt without complaint. The equal-weight identity came out at
+91%/yr against a reference of 88%; the dividend check reported 28 points of yield. The
+676 previously-good tickers were otherwise byte-identical, which bronze proved — both
+pulls were on disk, partitioned by fetch date, and the diff took one script.
+
+**Decision.** Three things, all in `ingest/prices_yfinance.py`.
+
+* **An integrity gate.** `series_integrity()` scores every returned series and rejects
+  one that has more than five impossible OHLC rows, a one-day move above 400% inside its
+  index-membership window on a day with no recorded split, or fewer than half its own
+  sessions present. Rejected series never reach silver; they are written to bronze as
+  `rejected_tickers.json` with the reason. The return rule is judged inside membership
+  because that is where the panel looks — a shell's post-delisting pennies do not
+  matter. The coverage rule exempts live members: a hole in a current constituent is a
+  gap `quality` reports, never a series to drop, because dropping a live name is the
+  survivorship bias this project exists to prevent. Dry-run on the validated pull: one
+  rejection, a six-bar stub for a name that had just been acquired. On the refresh:
+  seventeen, all delisted, all with a reason a human would agree with.
+* **A carry-forward guard.** A ticker that was in silver last time and is absent or
+  rejected this time keeps its previous rows, logged as a WARNING and written to bronze
+  as `carried_forward_tickers.json`. Those rows had passed every check; one bad vendor
+  response does not un-pass them.
+* **Replay from bronze.** `ingest prices --from-bronze YYYY-MM-DD` rebuilds silver from
+  that day's chunks with zero network. This is the rollback, and it is why bronze was
+  partitioned by fetch date from the first commit. A replay skips the carry-forward,
+  because a replay means the current silver is exactly what is not trusted.
+
+**Consequence.** Silver was restored from the 2026-08-27 pull through the gate,
+everything derived was rebuilt, and `doctor` passed. The refresh's chunks stay in bronze
+as the record of what the vendor returned. The next refresh will run through the gate;
+the names it accepts among the 34 are real coverage the project did not have before,
+and the ones it rejects are the reason the gate exists.
+
+**The lesson for the bug table.** Nothing errored. The universe was point-in-time, the
+factors were computed, the panel clipped to membership, and five of the acceptance
+checks passed. The one that failed was the accounting identity, because a fabricated
++721,000% day is a real return to an engine that trusts its inputs. A refresh is a
+change to the data, and a change to the data gets the same gate as a change to the code.
+
+**Postscript: the refresh re-run through the gate.** With the gate in place the same
+chunks produced 693 tickers, bars to 2026-09-01, and a doctor that failed on two much
+smaller things. Five impossible bars had entered on four accepted delisted names (the
+gate tolerated up to five per series) plus two new ones Yahoo's restatement put on APH
+and LEG; and the equal-weight identity landed at 10.9bp against its 10bp bound — from
+0.1bp — because seventeen more names now genuinely delist inside the window, and the
+reference renormalises their proceeds across survivors where the engine parks them in
+cash. Its own docstring predicted that residual would grow with delisting coverage. The
+gate was tightened (a delisted series with even one impossible bar is rejected; a live
+member keeps the five-row tolerance, because on a first pull there is nothing to carry
+forward and its bad rows go to review), and silver was restored to the validated pull
+again. The identity question is TODO-10: whether the reference should model proceeds
+the way the engine does before the bound is moved. Until it is settled, the committed
+state is the validated pull, and the refresh is a command away.
+
+---
+
+## ADR-044 — A ticker blocklist is a universe decision
+
+**Status:** accepted (2026-09-02)
+
+**Context.** The refresh in ADR-043 "dropped" Agilent Technologies, ticker `A`, and the
+new carry-forward guard did not carry it. It could not: `A` had never been requested.
+The Wikipedia history parser keeps a small list of header words shaped like tickers
+(`SYMBOL`, `CIK`, `GICS` ...) and, from the first commit, that list also held `N`, `A`
+and `NA` — fragments of "N/A" boilerplate. Agilent has been an index member since June
+2000. It was in today's constituent list, which a different parser builds, and absent
+from every monthly snapshot, every membership interval, and therefore every backtest,
+every feature panel and every forward test this project has run. The ever-member count
+of 971 should have been 972. Nothing flagged it, because a name that is not in the
+universe is not missing from anything. (CBOE, below, was counted - it had a closed
+interval - which is a different failure with the same effect.)
+
+**Decision.** `A` comes off the list. `N/A` normalises to `N.A`, which is what actually
+needed filtering, so that goes on; `N` and `NA` stay for the split fragments. The parser
+tests now pin `A`, `{{NYSE|A}}` and `[[Agilent Technologies|A]]` as the ticker `A`, and
+`N/A`, `NA`, `N` as nothing. The membership history was re-parsed from the cached
+revisions, the validated price pull replayed through the gate (it had carried Agilent's
+bars all along), and everything derived was rebuilt.
+
+**Why this ranks with the ticker-recycling and sort-key bugs.** A false positive on a
+blocklist that is shaped like a ticker is survivorship bias with no error message: the
+company never fails a check because it never enters one. Every entry on such a list has
+to be checked against the constituent list, and the check that would have caught this
+in 2026-08 is a one-liner — every ticker in `sp500_current` must appear in the
+intervals as an open member. That check now lives in `quality` (`membership`, ERROR).
+
+**It found a second one on its first run.** Cboe Global Markets (`CBOE`, a member since
+2017) had a *closed* interval ending 2018-12-31. Cboe lists on its own BZX exchange, and
+from 2019-01 the Wikipedia table writes its row as `{{BZX link|CBOE}}`; the template
+regex knew `nyse|nasdaq|bats|arca|amex` and not `bzx`, so the row was dropped from
+every later snapshot and CBOE spent seven years of backtests as an ex-member. `bzx` and
+`cboe` are in the regex now, with the template pinned in the parser tests. Two live
+constituents lost to two different parser gaps, neither visible from inside the
+membership table — which is the argument for the cross-check in one sentence.

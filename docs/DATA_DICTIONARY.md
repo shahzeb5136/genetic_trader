@@ -85,7 +85,7 @@ Prefer `sp500_membership_intervals` for that era (ADR-010).
 ---
 
 ### `trading_calendar`
-6,702 NYSE sessions derived empirically from SPY (ADR-009).
+6,706 NYSE sessions derived empirically from SPY (ADR-009).
 
 `date`, `year`, `month`, `day_of_week`, `is_month_end`, `is_quarter_end`, `is_year_end`,
 `session_index`, `calendar_source`
@@ -104,7 +104,10 @@ SEC CIK↔ticker↔exchange spine. 10,388 current registrants.
 ## Market
 
 ### `daily_bars`
-Raw OHLCV as received. 3.71M rows, 677 securities, 2000 → present.
+Raw OHLCV as received, after the ingest gate. 3,706,366 rows, 676 securities, 2000-01-03 →
+2026-08-26. A returned series with more than five impossible bars, a >400% day inside its
+membership window, or under half its own sessions never reaches this table (ADR-043); what
+was rejected is listed in bronze beside the pull.
 
 | Column | Notes |
 |---|---|
@@ -161,10 +164,20 @@ bars belonging to a recycled symbol.
 ---
 
 ### `benchmarks`
-SPY, RSP, ^GSPC, IWM, ^VIX. 32,577 rows. Same columns as `daily_bars` plus `description`.
+29 series that are never index constituents, 171,135 rows. Same columns as `daily_bars`
+plus `dividend`, `split_ratio` and `description`. Keyed by `(ticker, date)`.
+
+| Group | Tickers |
+|---|---|
+| The scoreboard | `SPY` (total-return proxy), `RSP` (equal weight), `^GSPC` (price index), `IWM`, `^VIX` |
+| Volatility term structure | `^VIX9D` (from 2011), `^VIX3M` (from 2007) |
+| GICS sectors (SPDRs) | `XLK XLF XLE XLV XLI XLP XLY XLU XLB`, `XLRE` (2015), `XLC` (2018) |
+| Cross-asset regime | `TLT IEF SHY` (Treasuries), `LQD HYG` (credit), `GLD`, `UUP` (dollar), `DBC` (commodities) |
+| Size and style | `QQQ`, `MDY`, `VTI` |
 
 The first backtest to run is buy-and-hold SPY. If it doesn't reproduce SPY's actual total
-return to within a few basis points, the engine is wrong.
+return to within a few basis points, the engine is wrong. The calendar is derived from SPY
+alone; `^VIX` prints on two days the ETFs did not trade, which consumers drop.
 
 ---
 
@@ -220,13 +233,36 @@ sentiment, recession indicator). Using those at face value in a backtest is a lo
 
 ---
 
+## Factors
+
+### `fama_french_daily`
+Daily factor returns from the Kenneth French library (ADR-042). 26,173 sessions, wide,
+**in decimals** — the source publishes percent and the parser divides.
+
+| Column | Notes |
+|---|---|
+| `date` | Session |
+| `mkt_rf` | Market minus the risk-free rate (CRSP value-weighted total market) |
+| `smb`, `hml`, `rmw`, `cma` | Size, value, profitability, investment — the five-factor set, from 1963-07 |
+| `rf` | One-month T-bill return for the day |
+| `mom` | Momentum, from 1926-11 (NaN elsewhere before 1963 for the five) |
+| `source` | `fama_french` |
+
+`mkt_rf + rf` is the whole market's total return; SPY tracks it above 0.98 and the quality
+battery asserts that (`cross_source_ff`). The library lags about two months and revises the
+newest months as delistings are finalised. Regress a strategy's monthly returns on these to
+see whether it is a factor bet in disguise; hedge `mkt_rf` and `smb` out of a daily idea to
+see what its stock selection is worth.
+
+---
+
 ## Gold — backtest inputs
 
 Built by the engine, rebuildable from silver. Registered in DuckDB with a `gold_` prefix
 (`gold_half_spread`, `gold_delisting_returns`).
 
 ### `gold/backtest/half_spread`
-3,706,372 rows. Proportional half-spread per (security, session), used by the cost model.
+3,706,366 rows. Proportional half-spread per (security, session), used by the cost model.
 
 | Column | Notes |
 |---|---|
@@ -320,10 +356,17 @@ registered in DuckDB. Disposable — delete it and `build_panel()` rebuilds in ~
 Output of `sp500lab quality`. `check`, `severity` (ERROR/WARN/INFO), `entity`, `detail`,
 `rows`, `sample`, `checked_at`.
 
+One row per finding, sorted ERROR first. The battery covers every silver table (a schema
+contract, then per-table invariants), the adjustment chain, the two gold tables, the
+bronze manifest, and three cross-source agreements: FRED VIXCLS against Yahoo ^VIX to the
+cent, SPY against ^GSPC on daily returns, and SPY against the Fama-French market factor.
+The four reviewed vendor print errors (ADR-040) report as WARN; any new impossible bar is
+an ERROR, so `--strict` exits non-zero only on something nobody has looked at.
+
 ### `adjustment_vs_vendor`
 Per-ticker agreement between our adjusted series and the vendor's, compared on **returns**
 (invariant to the vendor's constant rescaling).
 
 `ticker`, `bars`, `median_ret_diff`, `p99_ret_diff`, `max_ret_diff`, `flag`
 
-Current state: median 1.3e-07 across 675 tickers, zero flagged.
+Current state: median 1.3e-07 across 674 tickers, zero flagged.

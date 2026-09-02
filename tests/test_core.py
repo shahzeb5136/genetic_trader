@@ -9,12 +9,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from sp500lab.ingest.wikipedia_history import (_extract_ticker, _find_ticker_column,
-                                               build_intervals, parse_constituents)
-from sp500lab.normalize.adjustments import (AS_TRADED, SPLIT_ADJUSTED, apply_factors,
-                                            compute_factors)
+from sp500lab.ingest.wikipedia_history import (
+    _extract_ticker,
+    _find_ticker_column,
+    build_intervals,
+    parse_constituents,
+)
+from sp500lab.normalize.adjustments import AS_TRADED, SPLIT_ADJUSTED, apply_factors, compute_factors
 from sp500lab.registry import SecurityRegistry
-
 
 # --------------------------------------------------------------- security master
 
@@ -69,6 +71,18 @@ def test_ids_are_not_reused_after_reload():
     ("reports", None),                    # SEC-filings column, not a ticker
     ("[[Abbott Laboratories]]", None),    # company name, not a ticker
     ("", None),
+    # Agilent's ticker is a single letter. It sat on the not-a-ticker list from the
+    # first commit and the company was missing from every snapshot (ADR-044).
+    ("A", "A"),
+    ("{{NYSE|A}}", "A"),
+    ("[[Agilent Technologies|A]]", "A"),
+    ("N/A", None),                        # normalises to N.A - boilerplate, not a ticker
+    ("NA", None),
+    ("N", None),
+    # Cboe lists on its own BZX exchange; Wikipedia switched its row to this template in
+    # 2019-01 and the parser dropped it for seven years of snapshots (ADR-044).
+    ("{{BZX link|CBOE}}", "CBOE"),
+    ("{{Cboe|CBOE}}", "CBOE"),
 ])
 def test_extract_ticker(cell, expected):
     assert _extract_ticker(cell) == expected

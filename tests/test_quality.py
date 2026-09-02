@@ -375,6 +375,20 @@ def test_referential_integrity_finds_an_orphan():
     assert Q.check_referential_integrity(master, {"x": _bars(sid="SID1")}) == []
 
 
+def test_every_current_constituent_must_be_an_open_member():
+    """The check that would have caught Agilent (ADR-044): today's list and the
+    point-in-time intervals come from different parsers, so a name one of them drops
+    is visible only by comparing them."""
+    iv = _intervals([("S1", "AAA", "2018-01-01", None, True, "w"),
+                     ("S2", "OLD", "2010-01-01", "2015-01-01", False, "w")])
+    current = pd.DataFrame({"ticker": ["AAA"]})
+    assert Q.check_membership_intervals(iv, current) == []
+    current = pd.DataFrame({"ticker": ["AAA", "A", "OLD"]})
+    f = Q.check_membership_intervals(iv, current)
+    assert _sev(f, "membership") == [ERROR]
+    assert "2 current constituent" in f[0]["detail"] and "A, OLD" in f[0]["sample"]
+
+
 def test_membership_intervals_invariants():
     assert Q.check_membership_intervals(_intervals([
         ("SID1", "AAA", "2018-01-01", "2019-01-01", False, "w"),

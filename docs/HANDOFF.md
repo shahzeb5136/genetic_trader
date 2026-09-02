@@ -14,6 +14,21 @@ Book and Calendar Lab report pages, and a forward test of all sixteen new candid
 through the standard harness. Jump to §4d; ADR-036 to ADR-038 for the decisions, and
 read the contamination note in ADR-037 before quoting any of the wave's forward numbers.
 
+**What changed on 2026-09-02:** checks, and the data to check against. The quality
+battery went from one table to the whole lake, with three cross-source agreements
+(ADR-040 settles the four vendor print errors that had blocked `--strict`). Every
+strategy is now run through a contract check and a no-lookahead check — the panel is
+truncated just past the window and the weights must not change — and `sp500lab doctor`
+runs every check across data and algorithms with one exit code (ADR-041). Daily
+Fama-French factors and 24 more benchmark series (sectors, the VIX term structure, a
+cross-asset regime set) joined the lake (ADR-042). A price refresh then came back
+corrupt in three ways at once — `doctor` caught it, silver was rolled back to the
+validated 2026-08-27 pull by replaying bronze, and the ingester gained an integrity gate
+so it cannot happen again (ADR-043; the row at the bottom of §7). Bars therefore still
+end 2026-08-26 while the calendar, from the refreshed benchmarks, runs to 2026-09-01;
+the next `ingest prices` through the gate closes that. Nothing in the reporting layer
+was touched.
+
 ---
 
 ## 1. What this is
@@ -66,36 +81,48 @@ Repo: `https://github.com/shahzeb5136/genetic_trader` (public, 2 commits)
 
 ## 2. State of play — verified numbers, not estimates
 
-Every figure below was measured on 2026-08-27. Re-derive with `python -m sp500lab status`.
+Every figure below was measured on 2026-09-02. Re-derive with `python -m sp500lab status`.
 
 | Dataset | Rows | Notes |
 |---|---:|---|
-| `sp500_membership_intervals` | 1,019 | **Point-in-time universe.** The important one. |
-| `sp500_membership_snapshots` | 113,731 | 227 monthly snapshots, 2007-03 → 2026-08 |
-| `daily_bars` | 3,706,372 | 677 securities, 2000-01-03 → 2026-08-26 |
-| `daily_bars_adjusted` | 3,706,372 | + our own adjustment factors |
+| `sp500_membership_intervals` | 1,020 | **Point-in-time universe.** The important one. |
+| `sp500_membership_snapshots` | 114,050 | 227 monthly snapshots, 2007-03 → 2026-08 |
+| `daily_bars` | 3,706,366 | 676 securities, 2000-01-03 → 2026-08-26, through the ingest gate (ADR-043) |
+| `daily_bars_adjusted` | 3,706,366 | + our own adjustment factors |
 | `corporate_actions` | 41,954 | 41,224 dividends, 730 splits |
 | `xbrl_facts` | 3,346,513 | Point-in-time fundamentals, 649 companies |
 | `fred_series` | 127,457 | 18 macro series |
+| `fama_french_daily` | 26,173 | Five factors + momentum, daily since 1926, decimals (ADR-042) |
 | `eodhd_us_symbols` | 111,032 | 51,206 active + 59,826 delisted |
-| `trading_calendar` | 6,702 | NYSE sessions, derived from SPY |
-| `benchmarks` | 32,577 | SPY, RSP, ^GSPC, IWM, ^VIX |
-| `gold_half_spread` | 3,706,372 | Estimated half-spread per (security, date) |
+| `trading_calendar` | 6,706 | NYSE sessions, derived from SPY, to 2026-09-01 |
+| `benchmarks` | 171,135 | 29 series: the scoreboard, 11 sector SPDRs, the VIX term structure, a cross-asset regime set |
+| `gold_half_spread` | 3,706,366 | Estimated half-spread per (security, date) |
 | `gold_delisting_returns` | 518 | Exit assumption per security, with its reasoning |
+| `data_quality` | 23 | The battery's findings: 0 ERROR, 14 WARN, 9 INFO |
 | `experiments/runs.jsonl` | per run | Trial log: 54 fields, append-only |
 | `experiments/curves.jsonl` | per run | Month-end equity curves, for reports |
 
-**The headline: 971 tickers have been in the index since 2007-03. 501 are in it today.
-470 are gone.** That gap is the entire reason this project exists.
+**The headline: 972 tickers have been in the index since 2007-03. 501 are in it today.
+471 are gone.** That gap is the entire reason this project exists. (972, not 971: Agilent
+was missing from the universe until 2026-09-02, and Cboe had been wrongly closed out at
+the end of 2018 — ADR-044.)
 
-Tests: **376 passing** (`python -m pytest tests/ -q`) — data layer, engine, registry,
-reporting, trade ledger, features, evolution, forward harness, and (2026-08-30) the
-timing leg engine and the frontier strategies.
-Backtest acceptance: **6 of 6 passing** (`python -m sp500lab backtest accept`).
+Tests: **627 passing** (`python -m pytest tests/ -q`, ~5 min with data) — data layer,
+engine, registry, reporting, trade ledger, features, evolution, forward harness, the
+timing leg engine and the frontier strategies, and (2026-09-02) every quality check on a
+synthetic defect, the storage layer and the HTTP cache against a stubbed client, every
+ingest parser and the price gate, the doctor's plumbing, and the strategy contract over
+the whole roster.
+Backtest acceptance: **5 of 5 on the engine, 50 of 50 over the roster** — every strategy
+runs, and none changes its weights when the panel is truncated (`python -m sp500lab
+backtest accept --strategies all`, ADR-041).
 Timing acceptance: **both identities passing** (`python -m sp500lab timing accept`,
 0.00bp/yr calibration, 6e-15 decomposition error).
 Feature leakage: **79 of 79 bit-identical** (`python -m sp500lab features check`).
-Bronze integrity: 700 artifacts, all checksums verified, 25 tombstoned.
+Data quality: **0 ERROR** across every silver table, the adjustment chain, both gold
+tables, bronze and three cross-source checks (`python -m sp500lab quality --strict`).
+Bronze integrity: 732 artifacts, all checksums verified, 25 tombstoned.
+All of the above from one command: `python -m sp500lab doctor` (2.5 min, exit 0).
 
 **The number that calibrates everything:** buy-and-hold SPY through the engine reproduces
 SPY's real total return to **0.2 basis points** (8.32%/yr, 2000-01-03 → 2026-08-26).
@@ -337,7 +364,13 @@ stay in the append-only ledgers, labelled by their own rationale.
   reports how many of its exits used one.
 - Fundamentals begin 2009-04 (XBRL mandate) against a 2007-03 membership start.
   Price-only strategies get the full window.
-- 1 ERROR outstanding: 4 rows where `low > open` out of 3.7M.
+- ~~1 ERROR outstanding: 4 rows where `low > open`.~~ **Resolved** (ADR-040): reviewed,
+  allowlisted by row in `KNOWN_BAD_BARS`, reported as WARN. `quality --strict` exits 0
+  on the real lake and any new impossible bar is still an ERROR.
+- 48 tickers have price bars on disk but **none inside their membership window** — the
+  whole series belongs to a later company under the same symbol. `quality` now reports
+  them (`phantom_history`) and coverage counts them as missing: **625/971 usable**, not
+  the 676 the old count claimed.
 
 ---
 
@@ -675,15 +708,57 @@ baselines to get *worse* — that is the survivorship bias being removed.
 
 ### TODO-9 — Minor / cleanup
 
-- **4 rows where `low > open`** (HUBB 2021-05-05, NAVIV 2014-04-30, SAF 2021-08-30) out of
-  3.7M. Genuine vendor errors. Decide: drop, or repair from adjacent bars. Record whichever
-  in an ADR.
+- ~~4 rows where `low > open`.~~ **Decided and recorded** (ADR-040): left in place,
+  allowlisted by row with a reason each, reported as WARN. None can move a result.
+- ~~Wire `quality --strict` into CI once the bad rows are resolved.~~ **Done, and
+  broader:** `sp500lab doctor` runs the bronze re-hash, the strict data battery, the
+  engine suite, the timing identities and the feature-leakage rebuild with one exit code;
+  `--roster` adds every strategy. Put `doctor --fast` on a commit hook and `doctor
+  --roster` before a release.
 - **No index weights**, so the cap-weighted benchmark cannot be reproduced from our own
   data. The engine uses the SPY total-return series; equal-weight is reproducible directly.
 - **Fundamentals begin 2009-04** (XBRL mandate) against a 2007-03 membership start.
-- **`sp500lab quality --strict`** exits non-zero on any ERROR — wire it into CI alongside
-  `backtest accept` once the 4 bad rows are resolved, so new ERRORs block rather than
-  accumulate.
+- **Two junk tickers in the security master** (`NONE.`, `NE.WTA`), assigned from a price
+  feed. Harmless — neither has membership — and flagged by `check_security_master`.
+- **113 XBRL facts with |value| > 1e13** (AMD, ORCL, STX among them) — a unit or scale
+  error at the filer. Flagged as WARN; the feature layer's winsorisation absorbs them, but
+  a per-tag magnitude bound would be the clean fix.
+- **The Fama-French library lags ~2 months.** Data through 2026-06-30 on 2026-09-02. Fine
+  for research; anything reading the newest factor print should know it moves.
+
+---
+
+### TODO-10 — The next price refresh, and the equal-weight identity's residual
+
+**Where it stands.** The committed data state is the validated 2026-08-27 price pull,
+replayed through the ingest gate: 676 securities, bars to 2026-08-26. The 2026-09-02
+refresh is in bronze and, run through the gate, gives 693 securities and bars to
+2026-09-01 — seventeen delisted names Yahoo now serves cleanly (DDR, COL, MOLX, GR,
+TLAB, WPI ...) are real coverage the project did not have. It is a command away:
+
+```bash
+python -m sp500lab ingest prices && python -m sp500lab normalize && python -m sp500lab backtest build-spreads && python -m sp500lab backtest build-delisting && python -m sp500lab backtest build-panel && python -m sp500lab features build --rebuild && python -m sp500lab doctor
+```
+
+**What stops it being accepted today.** `doctor` fails one check on that state: the
+equal-weight identity (accept.py check 2) lands at **10.9bp** against a 10bp bound, up
+from 0.1bp. The residual is the one its docstring names — proceeds from names that
+delist inside the window are parked in cash by the engine and renormalised across
+survivors by the reference — and it grew because seventeen more names now genuinely
+delist inside 2007–2021. Two honest resolutions, and the bound must not simply be moved
+without choosing one:
+
+1. Teach `equal_weight_reference` to hold delisting proceeds in cash until the next
+   execution date, the way the engine does. Then the identity is exact again and stays
+   exact as coverage improves (the paid feed will add hundreds of delistings).
+2. Decide the reference's renormalisation is the better model and change the engine.
+
+Option 1 is the right one: the engine's behaviour is the mandate (a monthly rebalancer
+cannot redeploy proceeds mid-month), and the reference is supposed to be the naive
+restatement of it. Do it, re-run the refresh chain above, and expect check 2 back under
+1bp. Also review the new impossible bars the refresh puts on APH and LEG (Yahoo's
+restatement added a bad print on 2021-05-05 and 2023-06-05 to each) into
+`KNOWN_BAD_BARS` or reject them — that is the ADR-040 workflow, not a bug.
 
 ---
 
@@ -762,6 +837,8 @@ Each cost real debugging time. All are fixed; the lessons generalize.
 | Unfilled orders were charged commission, because costs were priced before the fill check | A cost with no executed order behind it is invisible until somebody lists the orders (ADR-029) |
 | Market cap from a cover-page share count that covered one share class — Simon Property at $1.7M | A wrong DENOMINATOR is worse than a wrong numerator: it puts the bad row at the top of a value ranking |
 | `shallow_mlp` kept fitted nets across runs of one instance; the forward harness runs six backtests per instance, so a 2007 research leg scored on nets trained through 2026 — and printed a 2.20 forward Sharpe | A strategy that keeps fitted state must RESET it per run: instances outlive runs, and determinism across seeds is not determinism across reuse. The impossible number is what surfaced it (ADR-037 postscript) |
+| A routine price refresh returned 34 delisted names Yahoo had never served, a third of them corrupt (a +721,000% day, 895 impossible bars), and restated two others end to end. Nothing errored; the equal-weight CAGR came out at 91%/yr | **A change to the data gets the same gate as a change to the code.** `doctor` caught it; the ingester now rejects a corrupt series before silver, carries a vanished ticker forward from the last validated rows, and `--from-bronze` replays any earlier pull — which is why bronze was partitioned by fetch date from the first commit (ADR-043) |
+| `"A"` sat on the Wikipedia parser's not-a-ticker list from the first commit, swept up with the `N/A` fragments. Agilent Technologies — ticker `A`, an index member since 2000 — was therefore absent from every membership snapshot, every interval and every backtest. It surfaced only because the refresh above "dropped" it and the carry-forward guard could not carry a name that had never been requested. The cross-check written in response found a second one on its first run: Cboe (`CBOE`) had "left the index" at the end of 2018 because Wikipedia switched its row to a `{{BZX link\|...}}` template the regex did not know | **A filter list is a universe decision, and so is a regex.** Every entry on a blocklist that is shaped like a ticker must be checked against the constituent list, and every current constituent must be an open member of the intervals — because a false positive in either place is survivorship bias with no error message (ADR-044) |
 
 The third and fourth are the important ones. `verify` passed the entire time the chunk
 cache was corrupt, because the file matched its own checksum perfectly — **integrity
@@ -791,19 +868,19 @@ python -m sp500lab ingest all
 ```
 
 ```bash
-python -m sp500lab quality
+python -m sp500lab doctor                 # every check, one exit code - run this first
 ```
 
 ```bash
-python -m sp500lab backtest accept
+python -m sp500lab doctor --roster        # ...and every strategy, before a release
+```
+
+```bash
+python -m sp500lab quality                # the data battery on its own, with detail
 ```
 
 ```bash
 python -m sp500lab backtest baselines
-```
-
-```bash
-python -m sp500lab features check
 ```
 
 ```bash
@@ -825,7 +902,7 @@ The strategies and the same-window scoreboard: `docs/STRATEGIES.md`.
 The genetic algorithm: `docs/EVOLUTION.md`.
 Exporting and auditing the orders: `docs/TRADES.md`.
 Table and column reference: `docs/DATA_DICTIONARY.md`.
-Why anything is the way it is: `docs/DECISIONS.md` (28 ADRs).
+Why anything is the way it is: `docs/DECISIONS.md` (42 ADRs).
 Worked query examples showing the right and wrong way: `scripts/explore.py`.
 
 **Secrets:** `.env` is gitignored and holds `EODHD_API_TOKEN`. The current token is a

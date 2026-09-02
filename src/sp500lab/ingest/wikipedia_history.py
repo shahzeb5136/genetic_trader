@@ -64,9 +64,13 @@ REV_LIST_TTL = 6 * 3600       # revision *metadata* is cheap; refresh a few time
 MIN_PLAUSIBLE = 350
 MAX_PLAUSIBLE = 620
 
-# Symbol templates: NyseSymbol|MMM, NASDAQ|AAPL, NYSE|X, BATS|.., NYSEARCA|..
+# Symbol templates: NyseSymbol|MMM, NASDAQ|AAPL, NYSE|X, BATS|.., NYSEARCA|.. and, since
+# 2019-01, {{BZX link|CBOE}} for the one member listed on Cboe's own BZX exchange. That
+# word was missing here until 2026-09-02, so CBOE "left the index" at the end of 2018 in
+# every later snapshot (ADR-044). A template word this regex does not know drops the row
+# silently; `quality`'s current-vs-intervals check is what makes the next one visible.
 _TEMPLATE_TICKER = re.compile(
-    r"\{\{\s*[A-Za-z0-9 _-]*(?:symbol|nyse|nasdaq|bats|arca|amex)[A-Za-z0-9 _-]*"
+    r"\{\{\s*[A-Za-z0-9 _-]*(?:symbol|nyse|nasdaq|bats|bzx|cboe|arca|amex)[A-Za-z0-9 _-]*"
     r"\s*\|\s*([^}|\]]+?)\s*(?:\||\}\})", re.I)
 _WIKILINK = re.compile(r"\[\[(?:[^\]|]*\|)?([^\]|]+)\]\]")
 _REF_TAG = re.compile(r"<ref.*?(?:/>|</ref>)", re.S | re.I)
@@ -77,9 +81,15 @@ _VALID_TICKER = re.compile(r"^[A-Z][A-Z0-9]{0,5}(?:\.[A-Z]{1,2})?$")
 # this, a header cell that escapes row detection is silently ingested as a company:
 # "SYMBOL" appeared in 10 snapshots (2023-11..2024-08) before this filter existed,
 # and only surfaced when it failed to match anything in a vendor's symbol universe.
+#
+# What must NOT be here: any real ticker. "A" was on this list from the first commit -
+# swept up with the "N/A" fragments - and Agilent Technologies, an index member since
+# 2000 whose ticker is A, was therefore absent from every membership snapshot, every
+# interval and every backtest until 2026-09-02 (ADR-044). "N/A" normalises to "N.A",
+# which is what actually needs filtering; "N" and "NA" stay for the split fragments.
 _NOT_TICKERS = {
     "SYMBOL", "TICKER", "SECURITY", "COMPANY", "CIK", "FOUNDED", "SECTOR",
-    "GICS", "DATE", "ADDED", "HQ", "NOTES", "REPORTS", "N", "A", "NA",
+    "GICS", "DATE", "ADDED", "HQ", "NOTES", "REPORTS", "N", "NA", "N.A",
 }
 
 

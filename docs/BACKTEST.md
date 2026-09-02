@@ -15,7 +15,8 @@ Read this before writing a strategy. Read §2 before trusting a number.
 python -m sp500lab backtest accept
 ```
 
-That is the gate. Six checks, and if any of them fails nothing downstream means
+That is the gate. Five checks on the engine plus two on every strategy (`--strategies
+all`, ADR-041), and if any of them fails nothing downstream means
 anything. Current state: all pass, SPY's total return reproduced to **0.2 basis
 points**.
 
@@ -557,7 +558,7 @@ src/sp500lab/backtest/
     engine.py      the rebalance loop and the accounting
     metrics.py     performance stats, deflated Sharpe
     results.py     BacktestResult, save/load, comparison
-    accept.py      the six acceptance checks
+    accept.py      the acceptance checks: five on the engine, two on every strategy
     cli.py         `sp500lab backtest ...`
 
 src/sp500lab/strategies/

@@ -295,3 +295,173 @@ def test_ff_files_and_columns_agree():
     from sp500lab.ingest.fama_french import COLUMNS, FILES
     for expect in FILES.values():
         assert all(c in COLUMNS for c in expect)
+
+
+# ------------------------------------------------------- the integrity gate
+
+def _series(ticker, n=100, start="2015-01-01", close=None, **cols):
+    dates = pd.bdate_range(start, periods=n).strftime("%Y-%m-%d")
+    c = np.asarray(close if close is not None else np.linspace(50, 60, n), dtype=float)
+    df = pd.DataFrame({"ticker": ticker, "date": dates, "open": c * 0.999, "high": c * 1.01,
+                       "low": c * 0.99, "close": c, "volume": 1e6, "split_ratio": 0.0})
+    for k, v in cols.items():
+        df[k] = v
+    return df
+
+
+def _intervals(rows):
+    return pd.DataFrame(rows, columns=["security_id", "ticker", "start_date", "end_date",
+                                       "end_is_open", "source"])
+
+
+def _cal(start="2014-01-01", n=800):
+    return pd.DataFrame({"date": pd.bdate_range(start, periods=n).strftime("%Y-%m-%d")})
+
+
+def test_gate_passes_a_clean_series():
+    from sp500lab.ingest.prices_yfinance import series_integrity
+    iv = _intervals([("S1", "AAA", "2015-01-01", None, True, "w")])
+    v = series_integrity(_series("AAA"), iv, _cal())
+    assert len(v) == 1 and not v.loc[0, "reject"] and v.loc[0, "live"]
+
+
+def test_gate_tolerates_a_few_bad_prints_on_a_live_member_and_none_on_a_dead_one():
+    """A current constituent with a couple of vendor glitches must still enter silver
+    (its bad rows become ERRORs for review, ADR-040); a delisted series with even one
+    impossible bar is rejected, because rejecting it loses nothing."""
+    from sp500lab.ingest.prices_yfinance import MAX_BAD_OHLC_ROWS, series_integrity
+    live = _intervals([("S1", "LIVE", "2015-01-01", None, True, "w")])
+    dead = _intervals([("S1", "DEAD", "2015-01-01", "2018-01-01", False, "w")])
+
+    b = _series("LIVE")
+    b.loc[:MAX_BAD_OHLC_ROWS, "low"] = b["open"] * 1.0005      # one more than tolerated
+    v = series_integrity(b, live, None)
+    assert v.loc[0, "reject"] and "impossible OHLC" in v.loc[0, "reasons"]
+    ok = _series("LIVE")
+    ok.loc[:MAX_BAD_OHLC_ROWS - 1, "low"] = ok["open"] * 1.0005  # exactly tolerated
+    assert not series_integrity(ok, live, None).loc[0, "reject"]
+
+    d = _series("DEAD")
+    d.loc[0, "low"] = d.loc[0, "open"] * 1.0005                   # a single bad print
+    v = series_integrity(d, dead, None)
+    assert v.loc[0, "reject"] and v.loc[0, "reasons"] == "1 impossible OHLC rows"
+    assert not series_integrity(_series("DEAD"), dead, None).loc[0, "reject"]
+
+
+def test_gate_shares_the_reviewed_allowlist_with_the_quality_battery():
+    """A delisted name with one REVIEWED bad print (KNOWN_BAD_BARS) keeps its history;
+    the same print on an unreviewed date rejects it. One allowlist, two consumers."""
+    from sp500lab.ingest.prices_yfinance import series_integrity
+    from sp500lab.quality.checks import KNOWN_BAD_BARS
+    (ticker, date), _ = next(iter(KNOWN_BAD_BARS.items()))
+    dead = _intervals([("S1", ticker, "2010-01-01", "2024-12-31", False, "w")])
+    b = _series(ticker, n=3, start=date)
+    b.loc[0, "low"] = b.loc[0, "open"] * 1.0005            # the reviewed row
+    assert not series_integrity(b, dead, None).loc[0, "reject"]
+    b.loc[2, "low"] = b.loc[2, "open"] * 1.0005            # an unreviewed one
+    v = series_integrity(b, dead, None)
+    assert v.loc[0, "reject"] and v.loc[0, "reasons"] == "1 impossible OHLC rows"
+
+
+def test_gate_rejects_a_wild_day_inside_membership_but_not_outside_it():
+    """The panel clips to membership, so a shell's post-delisting pennies do not matter;
+    a 5,000% day while the name was in the index is corrupt data."""
+    from sp500lab.ingest.prices_yfinance import series_integrity
+    close = np.full(100, 50.0)
+    close[80:] = 5000.0                                          # the jump is at bar 80
+    dates = pd.bdate_range("2015-01-01", periods=100).strftime("%Y-%m-%d")
+    left_before_jump = _intervals([("S1", "SHELL", "2015-01-01", dates[50], False, "w")])
+    still_in = _intervals([("S1", "SHELL", "2015-01-01", None, True, "w")])
+    b = _series("SHELL", close=close)
+    assert not series_integrity(b, left_before_jump, None).loc[0, "reject"]
+    v = series_integrity(b, still_in, None)
+    assert v.loc[0, "reject"] and "inside membership" in v.loc[0, "reasons"]
+
+
+def test_gate_forgives_a_jump_on_a_recorded_split_day():
+    from sp500lab.ingest.prices_yfinance import series_integrity
+    close = np.full(100, 50.0)
+    close[80:] = 500.0                                           # a 10:1 reverse split
+    b = _series("RS", close=close)
+    b.loc[80, "split_ratio"] = 0.1
+    iv = _intervals([("S1", "RS", "2015-01-01", None, True, "w")])
+    assert not series_integrity(b, iv, None).loc[0, "reject"]
+
+
+def test_gate_rejects_a_stub_but_never_a_live_member_for_coverage():
+    from sp500lab.ingest.prices_yfinance import series_integrity
+    dead = _intervals([("S1", "STUB", "2011-01-01", "2016-01-31", False, "w")])
+    live = _intervals([("S1", "STUB", "2011-01-01", None, True, "w")])
+    stub = _series("STUB", n=100).iloc[::4]                     # 25% of its own span
+    assert series_integrity(stub, dead, _cal()).loc[0, "reject"]
+    v = series_integrity(stub, live, _cal())
+    assert not v.loc[0, "reject"] and v.loc[0, "coverage"] < 0.5, \
+        "a hole in a live constituent is reported, never dropped"
+
+
+def test_replay_rebuilds_silver_from_a_bronze_partition_without_the_network(tmp_path,
+                                                                         monkeypatch):
+    """`ingest prices --from-bronze DATE` is the rollback (ADR-043). It must read every
+    chunk that pull wrote, whatever the request keys were, run the gate, carry nothing
+    forward from the silver it is replacing, and never touch the network."""
+    import sys
+
+    from sp500lab import http_cache, paths, query, storage
+    from sp500lab.ingest import prices_yfinance as P
+    from sp500lab.registry import SecurityRegistry
+
+    root = tmp_path / "data"
+    layout = {"DATA_DIR": root, "BRONZE_DIR": root / "bronze", "SILVER_DIR": root / "silver",
+              "GOLD_DIR": root / "gold", "VAULT_DIR": root / "vault",
+              "CACHE_DIR": root / "_cache", "MANIFEST_DIR": root / "_manifest",
+              "INGEST_LOG": root / "_manifest/ingest_log.jsonl"}
+    for mod in (paths, storage, http_cache, query):
+        for name, value in layout.items():
+            if hasattr(mod, name):
+                monkeypatch.setattr(mod, name, value)
+    monkeypatch.setattr(P.SecurityRegistry, "load", classmethod(lambda cls: SecurityRegistry()))
+
+    class NoNetwork:
+        @staticmethod
+        def download(*a, **k):
+            raise AssertionError("a replay must not fetch")
+    monkeypatch.setitem(sys.modules, "yfinance", NoNetwork)
+
+    # the universe the caller asks for, and a stale silver that must NOT leak through
+    storage.write_silver(pd.DataFrame({"security_id": ["S1", "S2", "S3"],
+                                       "ticker": ["AAA", "BAD", "GONE"]}),
+                         "reference/sp500_current")
+    stale = _series("GONE", n=5).assign(security_id="S3", source="yfinance",
+                                        ingest_date="2026-01-01").drop(columns=["split_ratio"])
+    storage.write_silver(stale, "market/daily_bars")
+
+    # two chunk files under an old partition with arbitrary request keys
+    part = paths.bronze_path(P.SOURCE, P.DATASET, "2026-01-01", "x").parent
+    part.mkdir(parents=True)
+    good = _series("AAA", n=40, dividend=0.0)
+    bad = _series("BAD", n=40, dividend=0.0)
+    bad["close"] = -1.0                                        # every bar impossible
+    for i, frame in enumerate((good, bad), 1):
+        frame = frame.assign(date=pd.to_datetime(frame["date"]))
+        frame.to_parquet(part / f"bars_chunk_00{i}_deadbeef{i}.parquet", index=False)
+
+    res = P.run(universe="current", ingest_date="2026-01-01")
+
+    assert not res.errors, res.errors
+    assert res.from_cache == 2 and res.fetched == 0
+    bars = storage.read_silver("market/daily_bars")
+    assert set(bars["ticker"]) == {"AAA"}, "BAD is rejected; GONE is not carried forward"
+    assert len(bars) == 40 and (bars["ingest_date"] == "2026-01-01").all()
+    assert res.notes["rejected_tickers"] == {"BAD": "40 impossible OHLC rows"}
+    assert res.notes["carried_forward_tickers"] == []
+    assert (part / "rejected_tickers.json").exists()
+
+
+def test_gate_report_has_one_row_per_ticker_with_the_reason_text():
+    from sp500lab.ingest.prices_yfinance import series_integrity
+    bad = _series("BAD")
+    bad["close"] = -1.0
+    v = series_integrity(pd.concat([_series("AAA"), bad]), None, None).set_index("ticker")
+    assert list(v.index) == ["AAA", "BAD"]
+    assert v.loc["BAD", "bad_ohlc"] == 100 and v.loc["BAD", "reject"]
+    assert v.loc["AAA", "reasons"] == ""

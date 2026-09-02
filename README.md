@@ -25,24 +25,26 @@ subscription is active.
 
 | Dataset | Rows | What it is |
 |---|---:|---|
-| `sp500_membership_intervals` | 1,021 | **Point-in-time index membership** — who was in the index, when |
-| `sp500_membership_snapshots` | 113,968 | 227 monthly constituent snapshots, 2007-03 → 2026-08 |
-| `daily_bars` | 3,706,372 | Raw daily OHLCV, 677 securities, 2000 → present |
-| `daily_bars_adjusted` | 3,706,372 | Same bars + **our own** adjustment factors |
+| `sp500_membership_intervals` | 1,020 | **Point-in-time index membership** — who was in the index, when |
+| `sp500_membership_snapshots` | 114,050 | 227 monthly constituent snapshots, 2007-03 → 2026-08 |
+| `daily_bars` | 3,706,366 | Raw daily OHLCV, 676 securities, 2000 → 2026-08-26, gated on ingest |
+| `daily_bars_adjusted` | 3,706,366 | Same bars + **our own** adjustment factors |
 | `corporate_actions` | 41,954 | 41,224 dividends + 730 splits, as discrete events |
-| `adjustment_factors` | 3,706,372 | Split/dividend factors, computed not borrowed |
-| `benchmarks` | 32,577 | SPY, RSP, ^GSPC, IWM, ^VIX |
-| `trading_calendar` | 6,702 | NYSE sessions, derived empirically from SPY |
+| `adjustment_factors` | 3,706,366 | Split/dividend factors, computed not borrowed |
+| `benchmarks` | 171,135 | 29 series: SPY and its relatives, 11 sector SPDRs, the VIX term structure, a cross-asset regime set |
+| `fama_french_daily` | 26,173 | Five Fama-French factors + momentum, daily since 1926, in decimals |
+| `trading_calendar` | 6,706 | NYSE sessions, derived empirically from SPY |
 | `fred_series` | 127,457 | 18 macro series (rates, spreads, VIX, CPI, …) |
-| `security_master` | 10,707 | Stable internal IDs surviving ticker changes |
+| `security_master` | 10,708 | Stable internal IDs surviving ticker changes |
 | `sp500_changes` | 407 | Index add/remove events with effective dates |
 | `xbrl_facts` | 3,346,513 | **Point-in-time** SEC fundamentals, 649 companies, 50 tags |
-| `gold_half_spread` | 3,706,372 | Estimated half-spread per (security, date) — the cost model's input |
+| `gold_half_spread` | 3,706,366 | Estimated half-spread per (security, date) — the cost model's input |
 | `gold_delisting_returns` | 518 | What happened to each security that left the index |
+| `data_quality` | 23 | The quality battery's findings: every table, the adjustment chain, bronze, three cross-source checks |
 
 ### The number that matters
 
-**973 tickers have been in the S&P 500 since March 2007. Only 502 are in it today.**
+**972 tickers have been in the S&P 500 since March 2007. Only 501 are in it today.**
 
 A backtest built on today's 503 constituents silently deletes 471 companies — every one
 that failed, was acquired, or was demoted. Published estimates put the resulting inflation
@@ -106,14 +108,14 @@ universe_asof("2008-09-30", con)          # survivorship-free constituents
 fundamentals_asof("2024-01-15", con)      # only what was filed by that date
 ```
 
-Then build the engine's inputs and run its acceptance checks:
+Then build the engine's inputs and run every check — data and algorithms, one exit code:
 
 ```bash
 python -m sp500lab backtest build-delisting && python -m sp500lab backtest build-spreads
 ```
 
 ```bash
-python -m sp500lab backtest accept
+python -m sp500lab doctor
 ```
 
 ```bash
@@ -206,10 +208,21 @@ optimistic; it is meaningless. See [EXPERIMENTS.md](docs/EXPERIMENTS.md).
 python -m sp500lab backtest accept
 ```
 
-Six acceptance checks. The gate is buy-and-hold SPY: the engine must reproduce SPY's real
-total return, and the three ways the adjustment chain can be wrong land on three separated
-numbers — 6.43%/yr means dividends were dropped, 10.2% means they were counted twice,
-8.32% is correct. It currently matches to **0.2 basis points**.
+Five checks on the engine, then two on every strategy. The gate is buy-and-hold SPY: the
+engine must reproduce SPY's real total return, and the three ways the adjustment chain can
+be wrong land on three separated numbers — 6.43%/yr means dividends were dropped, 10.2%
+means they were counted twice, 8.32% is correct. It currently matches to **0.2 basis
+points**. Then `--strategies all` runs the whole roster twice each: once normally, once on
+a panel physically truncated just past the window with every later filing deleted — and
+the weights must be bit-identical. That is the lookahead check the point-in-time view
+cannot make on its own, because `on_start` sees the whole panel by design. All 25 pass.
+
+```bash
+python -m sp500lab doctor
+```
+
+runs that alongside every data check — bronze checksums, the silver battery, the timing
+engine's identities, the feature-leakage rebuild — with one exit code, in 2.5 minutes.
 
 ```bash
 python -m sp500lab backtest baselines
@@ -648,7 +661,7 @@ figure comes out of the stored record.
 | [FORWARD_TEST.md](docs/FORWARD_TEST.md) | Testing after 2022: pre-registration, decay, and what 54 months can prove |
 | [REPORTS.md](docs/REPORTS.md) | Static HTML reports: what they show, and the view-layer split |
 | [ADDING_A_STRATEGY.md](docs/ADDING_A_STRATEGY.md) | **Write your own** — the contract, the helpers, and what will bite |
-| [FEATURES.md](docs/FEATURES.md) | The 75 point-in-time features, and the leakage test |
+| [FEATURES.md](docs/FEATURES.md) | The 79 point-in-time features, and the leakage test |
 | [STRATEGIES.md](docs/STRATEGIES.md) | The hypotheses — the twelve and the second wave — and the same-window scoreboard |
 | [TIMING.md](docs/TIMING.md) | The calendar lab: the leg engine, the overnight decomposition, nine rules |
 | [EVOLUTION.md](docs/EVOLUTION.md) | The genetic algorithm, and the four anti-overfitting defences |
@@ -663,12 +676,18 @@ figure comes out of the stored record.
 These are measured, not guessed. Each is documented in full in `docs/`.
 
 - **Price coverage of the point-in-time index is 54.7% in 2007**, rising to 100% today.
-  343 index members have no usable price history at all — Yahoo drops delisted names. So a
-  2007 backtest trades a 273-name subset of a 470-name index, and that subset is *the
-  survivors*: a second survivorship bias sitting underneath the point-in-time universe this
-  repo exists to construct. Every backtest reports its coverage ([ADR-023](docs/DECISIONS.md)).
-  **This is the single largest known weakness**, and the exact gap the planned EODHD purchase
-  closes.
+  346 of 971 ever-members have no usable price history — Yahoo drops delisted names, and
+  48 more come back as a *different company's* bars under the same symbol with none inside
+  the index era (`quality` reports them as `phantom_history`). So a 2007 backtest trades a
+  273-name subset of a 470-name index, and that subset is *the survivors*: a second
+  survivorship bias sitting underneath the point-in-time universe this repo exists to
+  construct. Every backtest reports its coverage ([ADR-023](docs/DECISIONS.md)). **This is
+  the single largest known weakness**, and the exact gap the planned EODHD purchase closes:
+  277 of the missing names are on EODHD's delisted list, but the free tier returns one year
+  of history at twenty calls a day and cannot backfill 2007 ([ADR-042](docs/DECISIONS.md)).
+- **Four bars out of 3.7 million are wrong at the vendor** and left that way: reviewed,
+  allowlisted by row, harmless to the engine ([ADR-040](docs/DECISIONS.md)). Any new
+  impossible bar is still an error.
 - **Delisting returns are recorded assumptions, not measurements.** There is no free
   authoritative source. 125 of 518 securities are `unresolved` and default to an index
   removal at the last price — the wrong answer for a bankruptcy. Each carries its assumption
@@ -694,14 +713,13 @@ These are measured, not guessed. Each is documented in full in `docs/`.
   unrecoverable from this source.
 - **The index-change table is under-recorded before 2010** (~7 events/year recorded vs the
   ~20/year that actually occur). Prefer `sp500_membership_intervals` for that era.
-- **155 tickers show likely symbol reuse** after leaving the index. Use
-  `prices_clipped_to_membership()` rather than raw ticker joins.
+- **155 tickers show likely symbol reuse** after leaving the index — 252,356 bars that
+  belong to somebody else. Use `prices_clipped_to_membership()` rather than raw ticker
+  joins; the panel does.
 - **Wikipedia is a volunteer-maintained secondary source.** It is the best free option, not
   ground truth. The first job after buying paid constituent data is to diff it against this.
 - **Fundamentals start 2009** — XBRL only became mandatory then, so `filed_date` coverage
   begins 2009-04. Earlier filings exist on EDGAR but are not machine-readable this way.
-- **Two credit-spread series are truncated to ~3 years** by FRED's keyless endpoint (licensed
-  ICE data). Everything else has full history. Don't use them for pre-2023 regime tagging.
 
 ---
 
@@ -713,12 +731,12 @@ In order. Full specifications in [HANDOFF.md](docs/HANDOFF.md) §5b.
    evaluate its winner on the next, with a purge and an embargo. This is the only way to
    get out-of-sample evidence without spending the holdout, and at 0.15s per evaluation it
    costs about twenty minutes for five folds.
-2. **Spend the holdout — once.** `sp500lab experiments holdout` currently reads 0 looks.
-   When there is a final candidate, pre-register it and run the forward test:
-   `sp500lab forward seal <name> --rationale "..."` then `sp500lab forward run <name>`.
-   Both legs, the decay and its standard error are recorded permanently
-   ([FORWARD_TEST.md](docs/FORWARD_TEST.md)). Seal the candidates on a different day from
-   the test — that gap is the only evidence the choice preceded the answer.
+2. **Let time pass, then re-test.** The holdout is spent — the whole roster went through
+   `sp500lab forward` and the looks are in the ledger. The only untainted evidence left is
+   the months that have not happened yet: `forward window` reports how many have accrued
+   since each candidate was tested, and a later `forward run` reports `fresh_months`. Seal
+   any new candidate on a different day from its test — that gap is the only evidence the
+   choice preceded the answer ([FORWARD_TEST.md](docs/FORWARD_TEST.md)).
 3. **Backfill the price gap** with a paid EOD feed (~$17/mo annual billing), then re-run the
    identical pipeline and **measure the survivorship-bias delta yourself**. Expect
    everything to get *worse*: that is the bias being removed.
