@@ -40,6 +40,8 @@ class BacktestResult:
     gross_equity  the same run with costs switched off, for the cost drag
     rebalances    one row per rebalance: NAV, turnover, positions, costs, coverage
     weights       target weights per rebalance date (rebalance x security_id)
+    trades        one row per order: side, shares, as-traded price, attributed costs.
+                  The evidence for the equity curve - see trades.py
     exits         positions resolved outside a rebalance - delistings and price gaps
     diagnostics   the honesty section: coverage, fallbacks, unresolved assumptions
     """
@@ -51,6 +53,7 @@ class BacktestResult:
     rebalances: pd.DataFrame
     weights: pd.DataFrame = field(repr=False, default_factory=pd.DataFrame)
     exits: pd.DataFrame = field(repr=False, default_factory=pd.DataFrame)
+    trades: pd.DataFrame = field(repr=False, default_factory=pd.DataFrame)
     gross_equity: pd.Series | None = field(repr=False, default=None)
     benchmark: pd.Series | None = field(repr=False, default=None)
     costs: CostBreakdown = field(default_factory=CostBreakdown)
@@ -121,6 +124,12 @@ class BacktestResult:
             w.reset_index().to_parquet(d / "weights.parquet", index=False)
         if len(self.exits):
             self.exits.to_parquet(d / "exits.parquet", index=False)
+        if len(self.trades):
+            self.trades.to_parquet(d / "trades.parquet", index=False)
+            # CSV as well as parquet, deliberately. The parquet is for this codebase;
+            # the CSV is for whoever is checking it, who may have neither Python nor a
+            # reason to trust ours.
+            self.trades.to_csv(d / "trades.csv", index=False)
 
         manifest = self.as_dict() | {"git_commit": _git_commit()}
         (d / "manifest.json").write_text(
@@ -144,13 +153,15 @@ class BacktestResult:
             weights = pd.read_parquet(d / "weights.parquet").set_index("date")
         exits = (pd.read_parquet(d / "exits.parquet")
                  if (d / "exits.parquet").exists() else pd.DataFrame())
+        trades = (pd.read_parquet(d / "trades.parquet")
+                  if (d / "trades.parquet").exists() else pd.DataFrame())
 
         return cls(
             strategy=manifest["strategy"], config=manifest["config"],
             equity=equity, gross_equity=gross, benchmark=bench,
             performance=Performance(**manifest["performance"]),
             rebalances=pd.read_parquet(d / "rebalances.parquet"),
-            weights=weights, exits=exits,
+            weights=weights, exits=exits, trades=trades,
             costs=CostBreakdown(**{k: v for k, v in manifest["costs"].items()
                                    if k not in ("total", "bps_of_traded")}),
             diagnostics=manifest["diagnostics"],
@@ -180,6 +191,52 @@ def compare(results: list[BacktestResult], benchmark_name: str = "") -> pd.DataF
         base = float(df.loc[df["strategy"] == benchmark_name, "CAGR"].iloc[0])
         df["vs_bench"] = df["CAGR"] - base
     return df.sort_values("Sharpe", ascending=False).reset_index(drop=True)
+
+
+def suite(results: list["BacktestResult"], benchmark: str = "SPY") -> pd.DataFrame:
+    """The honest scoreboard: every strategy against the index over ITS OWN window.
+
+    `compare()` ranks strategies against each other, which is the right thing only when
+    they all ran over the same dates. In this project they do not - see
+    `benchmark.over_window`. So this table carries the benchmark's CAGR and Sharpe for
+    each row's own span, and the two columns anyone should actually read are `excess`
+    and `d_sharpe`.
+
+    Sorted by `d_sharpe` rather than by Sharpe. A strategy that returned 17%/yr in a
+    market that returned 16%/yr did not do better than one that returned 10% in a market
+    that returned 10%, and sorting on the raw number says it did.
+    """
+    from .benchmark import over_window
+
+    rows = []
+    for r in results:
+        p = r.performance
+        b = over_window(r, benchmark)
+        rows.append({
+            "strategy": r.strategy,
+            "start": str(r.config.get("start", ""))[:7],
+            "end": str(r.config.get("end", ""))[:7],
+            "CAGR": p.cagr, "Sharpe": p.sharpe, "maxDD": p.max_drawdown,
+            "turnover": p.ann_turnover, "names": p.avg_positions,
+            "bench_CAGR": b.cagr if b else float("nan"),
+            "bench_Sharpe": b.sharpe if b else float("nan"),
+            "excess": (p.cagr - b.cagr) if b else float("nan"),
+            "d_sharpe": (p.sharpe - b.sharpe) if b else float("nan"),
+        })
+    df = pd.DataFrame(rows)
+    return df.sort_values("d_sharpe", ascending=False).reset_index(drop=True)
+
+
+def format_suite(df: pd.DataFrame) -> str:
+    out = df.copy()
+    for col in ("CAGR", "maxDD", "turnover", "bench_CAGR", "excess"):
+        if col in out.columns:
+            out[col] = out[col].map(lambda v: "n/a" if pd.isna(v) else f"{v * 100:.2f}%")
+    for col in ("Sharpe", "bench_Sharpe", "d_sharpe", "names"):
+        if col in out.columns:
+            out[col] = out[col].map(lambda v: "n/a" if pd.isna(v) else f"{v:+.2f}"
+                                    if col == "d_sharpe" else f"{v:.2f}")
+    return out.to_string(index=False)
 
 
 def format_compare(df: pd.DataFrame) -> str:

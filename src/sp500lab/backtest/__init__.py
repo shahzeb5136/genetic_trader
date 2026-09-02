@@ -10,6 +10,7 @@ Reading order if you are new to this
     engine.py      the rebalance loop, execution timing and the accounting
     costs.py       what a trade costs under the ADR-016 mandate
     portfolio.py   score -> weights, shared by every competitor
+    trades.py      the order-by-order ledger - the evidence for an equity curve
     accept.py      the four checks that decide if any of this means anything
     registry.py    the trial log and the holdout guard - read before searching
 
@@ -37,6 +38,7 @@ from .portfolio import Construction, build_weights, validate_weights
 from .results import BacktestResult, compare, format_compare
 from .strategy import (BaseStrategy, FunctionStrategy, SignalStrategy, Strategy,
                        get_strategy, list_strategies, register)
+from .trades import TradeLedger, holdings, reconcile, write_csv
 
 __all__ = [
     "Context", "LookaheadError", "PanelView",
@@ -50,4 +52,5 @@ __all__ = [
     "run_backtest", "run_all_cost_settings", "EngineError",
     "BacktestResult", "compare", "format_compare",
     "Performance", "probabilistic_sharpe", "deflated_sharpe", "deflate_result",
+    "TradeLedger", "reconcile", "write_csv", "holdings",
 ]

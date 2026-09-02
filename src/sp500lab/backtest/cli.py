@@ -8,6 +8,7 @@ panel and the strategy registry only load when a backtest is actually requested.
     sp500lab backtest run momentum_12_1 --costs realistic
     sp500lab backtest run momentum_12_1 --all-costs --top-k 30
     sp500lab backtest baselines
+    sp500lab backtest trades momentum_12_1 --out reports/trades
     sp500lab backtest build-spreads
     sp500lab backtest build-delisting
     sp500lab backtest coverage
@@ -22,6 +23,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+from pathlib import Path
 
 from ..paths import PROJECT_ROOT
 
@@ -52,6 +55,8 @@ def add_parser(sub) -> None:
     r.add_argument("--benchmark", default="SPY")
     r.add_argument("--save", default=None, help="directory to write the result into")
     r.add_argument("--annual", action="store_true", help="print the year-by-year table")
+    r.add_argument("--trades", default=None, metavar="PATH",
+                   help="also write the order-by-order trade ledger to this CSV")
     _add_research_args(r)
     r.set_defaults(func=cmd_run)
 
@@ -62,6 +67,45 @@ def add_parser(sub) -> None:
     b.add_argument("--save", default=None)
     _add_research_args(b, default_study="baselines")
     b.set_defaults(func=cmd_baselines)
+
+    tr = bs.add_parser(
+        "trades",
+        help="export every buy and sell a strategy made, for outside verification")
+    tr.add_argument("strategy")
+    tr.add_argument("--start", default="2007-04-01")
+    tr.add_argument("--end", default=None)
+    tr.add_argument("--costs", default="realistic",
+                    choices=["optimistic", "realistic", "pessimistic", "free"])
+    tr.add_argument("--capital", type=float, default=100_000.0)
+    tr.add_argument("--top-k", type=int, default=None)
+    tr.add_argument("--max-weight", type=float, default=None)
+    tr.add_argument("--weighting", default=None,
+                    choices=["equal", "score", "score_rank", "inverse_vol"])
+    tr.add_argument("--seed", type=int, default=0)
+    tr.add_argument("-o", "--out", default=None,
+                    help="output directory (default: reports/trades/<strategy>)")
+    tr.add_argument("--no-holdings", action="store_true",
+                    help="skip the month-by-month holdings file")
+    tr.add_argument("--top", type=int, default=15,
+                    help="how many names to show in the most-traded table")
+    _add_research_args(tr)
+    tr.set_defaults(func=cmd_trades)
+
+    su = bs.add_parser(
+        "suite",
+        help="run a group of strategies and score each against the index over ITS OWN "
+             "window - the only comparison that means anything here")
+    su.add_argument("group", nargs="?", default="all",
+                    help="all | baselines | alpha | learned | evolved, or a "
+                         "comma-separated list of strategy names")
+    su.add_argument("--start", default="2007-04-01")
+    su.add_argument("--end", default=None)
+    su.add_argument("--costs", default="realistic",
+                    choices=["optimistic", "realistic", "pessimistic", "free"])
+    su.add_argument("--benchmark", default="SPY")
+    su.add_argument("--save", default=None)
+    _add_research_args(su, default_study="suite")
+    su.set_defaults(func=cmd_suite)
 
     a = bs.add_parser("accept", help="the acceptance checks - run before trusting anything")
     a.add_argument("--start", default="2007-04-01")
@@ -215,6 +259,113 @@ def cmd_baselines(args) -> int:
         for res in results:
             res.save(f"{args.save}/{res.strategy}")
         print(f"\nsaved -> {args.save}")
+    return 0
+
+
+def cmd_trades(args) -> int:
+    """Run a strategy and write down every order it placed.
+
+    The point of this command is that somebody who does not trust the engine can check
+    it. So it writes as-traded prices and real share counts - the numbers a quote site
+    or a broker statement would show - and it prints the reconciliation that proves the
+    orders and the equity curve are the same run.
+    """
+    from . import run_backtest
+    from .strategy import get_strategy
+    from .trades import (format_reconcile, holdings, most_traded, reconcile,
+                         summarise, write_csv)
+
+    strat = get_strategy(args.strategy)
+    _apply_construction_overrides(strat, args)
+    result = run_backtest(
+        strat, start=args.start, end=args.end, initial_capital=args.capital,
+        costs=args.costs, seed=args.seed, holdout=args.holdout, study=args.study,
+        log_run=not args.no_log, notes=args.notes, record_trades=True)
+
+    out_dir = Path(args.out or (PROJECT_ROOT / "reports" / "trades" / args.strategy))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(result.summary())
+    print()
+    print("TRADING BY YEAR")
+    print(summarise(result.trades).to_string(index=False))
+    print()
+    print(f"MOST-TRADED NAMES (top {args.top} by notional)")
+    print(most_traded(result.trades, args.top).to_string(index=False))
+    print()
+
+    trades_path = write_csv(result.trades, out_dir / "trades.csv")
+    written = [f"{trades_path}  ({len(result.trades):,} orders)"]
+    if not args.no_holdings:
+        held = holdings(result)
+        held.to_csv(out_dir / "holdings.csv", index=False)
+        written.append(f"{out_dir / 'holdings.csv'}  ({len(held):,} positions)")
+    if len(result.exits):
+        result.exits.to_csv(out_dir / "exits.csv", index=False)
+        written.append(f"{out_dir / 'exits.csv'}  ({len(result.exits):,} forced exits)")
+
+    report = reconcile(result.trades, result)
+    print(format_reconcile(report))
+    print()
+    for line in written:
+        print(f"  wrote {line}")
+    print()
+    print("  Columns to check against a second source: date, ticker, side, shares,")
+    print("  price. `price` is the AS-TRADED open - what a broker printed that")
+    print("  morning - not an adjusted price, so it compares directly against a quote")
+    print("  site. `adj_price` is the total-return-adjusted number the engine's own")
+    print("  accounting used; the two differ by the dividend and split chain.")
+    _print_run_footer(result)
+    return 0 if report.get("ok") else 1
+
+
+def cmd_suite(args) -> int:
+    """Run a group and print the scoreboard that accounts for differing windows."""
+    from ..strategies import GROUPS
+    from . import run_backtest
+    from .results import format_suite, suite
+
+    names = (GROUPS[args.group] if args.group in GROUPS
+             else tuple(n.strip() for n in args.group.split(",") if n.strip()))
+    results, failed = [], []
+    for n in names:
+        try:
+            results.append(run_backtest(
+                n, start=args.start, end=args.end, costs=args.costs,
+                benchmark=args.benchmark, holdout=args.holdout, study=args.study,
+                log_run=not args.no_log, notes=args.notes, record_trades=False))
+        except Exception as exc:                                  # noqa: BLE001
+            failed.append(f"{n}: {exc}")
+    if not results:
+        for line in failed:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+
+    table = suite(results, benchmark=args.benchmark)
+    print("=" * 108)
+    print(f"SUITE  {args.group}   [{args.costs} costs]   benchmark {args.benchmark}")
+    print("=" * 108)
+    print(format_suite(table))
+    print()
+    print("  Windows DIFFER by design: anything built on XBRL fundamentals starts in")
+    print("  2010 because XBRL does, and 2010-2021 was a far kinder market than")
+    print(f"  2007-2021. `bench_CAGR` is {args.benchmark} over each row's own dates, so")
+    print("  `excess` and `d_sharpe` are the only two columns that compare like with")
+    print("  like. Sorted by `d_sharpe`. See docs/STRATEGIES.md.")
+    beat = table[table["d_sharpe"] > 0]
+    print()
+    print(f"  {len(beat)} of {len(table)} beat the index on risk-adjusted return: "
+          f"{', '.join(beat['strategy']) if len(beat) else 'none'}")
+    if failed:
+        print()
+        for line in failed:
+            print(f"  FAILED {line}", file=sys.stderr)
+
+    if args.save:
+        for res in results:
+            res.save(f"{args.save}/{res.strategy}")
+        print()
+        print(f"  saved -> {args.save}")
     return 0
 
 

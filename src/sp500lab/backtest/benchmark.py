@@ -89,3 +89,31 @@ def annualised(series: pd.Series) -> float:
 def available() -> list[str]:
     return connect().execute(
         "SELECT DISTINCT ticker FROM benchmarks ORDER BY ticker").df()["ticker"].tolist()
+
+
+def over_window(result, ticker: str = "SPY"):
+    """The benchmark's own statistics over exactly the dates a result covers.
+
+    The most important five lines in this file. Strategies in this project do NOT all
+    run over the same window - anything built on XBRL fundamentals starts in 2010
+    because XBRL does - and 2010-2021 was a far kinder market than 2007-2021. Measured
+    on the same engine: SPY compounded at 10.42%/yr from 2007-04 and at 15.66%/yr from
+    2010-07.
+
+    So a fundamentals strategy showing 17.4%/yr and a price strategy showing 11.1%/yr
+    are not ranked by those numbers, and a leaderboard that sorts them together is
+    actively misleading. `suite()` in results.py uses this to put each strategy next to
+    the index over ITS OWN dates, which is the only comparison that means anything.
+
+    Returns a `Performance`, or None if the benchmark cannot be loaded.
+    """
+    from . import metrics
+    try:
+        series = benchmark_total_return(ticker)
+    except Exception as exc:                                      # noqa: BLE001
+        log.warning("benchmark %s unavailable: %s", ticker, exc)
+        return None
+    aligned = series.reindex(result.equity.index).ffill().dropna()
+    if len(aligned) < 3:
+        return None
+    return metrics.compute(aligned)

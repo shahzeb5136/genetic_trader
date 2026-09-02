@@ -290,6 +290,62 @@ def annual_returns(equity: pd.Series) -> pd.Series:
 
 
 # --------------------------------------------------------------------------
+# Sampling error - how much a Sharpe measured over N observations is worth
+# --------------------------------------------------------------------------
+#
+# The multiple-testing correction below asks "could the best of N searches have got
+# this by luck". These two ask the prior question: "could ONE measurement have got
+# this by luck", which is what decides whether a short out-of-sample window can
+# distinguish anything at all. It usually cannot, and the number is worth seeing.
+
+def sharpe_standard_error(sharpe: float, n_obs: int, skew: float = 0.0,
+                          kurtosis: float = 3.0) -> float:
+    """Standard error of a Sharpe ratio, corrected for skew and fat tails.
+
+    Mertens (2002); Lo (2002) is the normal special case. Units follow the rest of
+    this section: `sharpe` is PER-OBSERVATION, not annualised, and `kurtosis` is the
+    FULL kurtosis (3.0 for a normal), not the excess kurtosis pandas reports.
+
+    The returned SE is in the same per-observation units, so annualise it the same way
+    you annualise the Sharpe itself - multiply by sqrt(periods per year).
+
+    Why it shares its algebra with `probabilistic_sharpe`
+    ----------------------------------------------------
+    The PSR is exactly `norm_cdf((SR - SR0) / SE)` with this SE, and the function below
+    is written that way so the two can never drift apart. A confidence interval that
+    disagreed with the probability printed next to it would be worse than having
+    neither.
+
+    Assumes serially uncorrelated returns. Month-end returns of a monthly-rebalanced
+    portfolio are close enough; daily returns of one are not, which is the same reason
+    the registry deflates on monthly statistics (ADR-026).
+    """
+    if n_obs < 3:
+        return float("nan")
+    variance = 1.0 - skew * sharpe + (kurtosis - 1.0) / 4.0 * sharpe ** 2
+    if variance <= 0:
+        return float("nan")
+    return math.sqrt(variance / (n_obs - 1))
+
+
+def sharpe_confidence_interval(sharpe: float, n_obs: int, skew: float = 0.0,
+                               kurtosis: float = 3.0,
+                               confidence: float = 0.95) -> tuple[float, float]:
+    """(low, high) interval for a Sharpe, in whatever units `sharpe` was given in.
+
+    Wide. That is the point of computing it. Fifty-six months of monthly data put a
+    +-0.9 band around an annualised Sharpe of 1.0, which means a forward test over that
+    span cannot tell 0.2 from 1.8 - and any verdict drawn from one has to be read
+    against that, not against the point estimate.
+    """
+    se = sharpe_standard_error(sharpe, n_obs, skew, kurtosis)
+    if not math.isfinite(se):
+        return float("nan"), float("nan")
+    z = norm_ppf(0.5 + confidence / 2.0)
+    return sharpe - z * se, sharpe + z * se
+
+
+# --------------------------------------------------------------------------
 # Multiple-testing control - the part that matters for a GA
 # --------------------------------------------------------------------------
 
@@ -301,12 +357,10 @@ def probabilistic_sharpe(sharpe: float, n_obs: int, skew: float, kurtosis: float
     an annual figure by sqrt(periods per year) first. `kurtosis` is the FULL kurtosis
     (3.0 for a normal), not the excess kurtosis pandas reports; convert with +3.
     """
-    if n_obs < 3:
+    se = sharpe_standard_error(sharpe, n_obs, skew, kurtosis)
+    if not math.isfinite(se) or se <= 0:
         return float("nan")
-    denom = 1.0 - skew * sharpe + (kurtosis - 1.0) / 4.0 * sharpe ** 2
-    if denom <= 0:
-        return float("nan")
-    return norm_cdf((sharpe - benchmark_sharpe) * math.sqrt(n_obs - 1) / math.sqrt(denom))
+    return norm_cdf((sharpe - benchmark_sharpe) / se)
 
 
 def expected_max_sharpe(n_trials: int, trial_sharpe_std: float) -> float:

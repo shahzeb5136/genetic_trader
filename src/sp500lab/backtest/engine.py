@@ -58,6 +58,7 @@ from .portfolio import validate_weights
 from .registry import HOLDOUT_START, apply_holdout, record_holdout_touch
 from .results import BacktestResult
 from .strategy import Strategy, get_strategy, normalize_weights
+from .trades import TradeLedger
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ def run_backtest(
     seed: int = 0,
     benchmark: str | None = "SPY",
     track_gross: bool = True,
+    record_trades: bool = True,
     min_coverage: float = DEFAULT_MIN_COVERAGE,
     strategy_kwargs: dict | None = None,
     holdout: str = "exclude",
@@ -105,6 +107,10 @@ def run_backtest(
     costs           'optimistic' | 'realistic' | 'pessimistic' | 'free' | CostModel
     liquidity_floor minimum trailing median dollar volume for a name to be buyable
     track_gross     also run the identical path with costs off, to measure cost drag
+    record_trades   build the order-by-order ledger (`result.trades`). On by default,
+                    because a result nobody can check the trades of is a claim rather
+                    than a measurement. A large search should turn it off: see
+                    trades.py for the sizing.
     min_coverage    refuse to run if any rebalance prices less than this share of the
                     index; 0.0 reports the number instead of refusing
     holdout         'exclude' (default) stops the day before HOLDOUT_START;
@@ -131,6 +137,16 @@ def run_backtest(
     cost_model = get_cost_model(costs)
     rng = np.random.default_rng(seed)
 
+    features = _resolve_features(strategy, features, panel)
+    # A strategy whose inputs did not exist before a date starts there, rather than
+    # sitting in cash and reporting the flat stretch as performance. See
+    # BaseStrategy.min_date.
+    min_date = getattr(strategy, "min_date", "") or ""
+    if min_date > start:
+        log.info("%s: start moved %s -> %s (its inputs do not exist earlier)",
+                 getattr(strategy, "name", "strategy"), start, min_date)
+        start = min_date
+
     start, end, touched = apply_holdout(start, end, holdout, str(panel.dates[-1]))
     if touched:
         record_holdout_touch(
@@ -153,7 +169,9 @@ def run_backtest(
     if hasattr(strategy, "on_start"):
         strategy.on_start(panel)
 
-    state = _State(panel, initial_capital)
+    trade_ledger = (TradeLedger(security_ids=panel.security_ids, tickers=panel.tickers)
+                    if record_trades else None)
+    state = _State(panel, initial_capital, ledger=trade_ledger)
     gross = _State(panel, initial_capital) if track_gross else None
     from .costs import FREE
 
@@ -180,7 +198,7 @@ def run_backtest(
         weight_rows.append(w_target)
 
         # ---- fill at the open of t+1 ----------------------------------------------
-        rec = state.rebalance(exec_row, w_target, cost_model)
+        rec = state.rebalance(exec_row, w_target, cost_model, signal_date=ctx.as_of)
         total_costs += rec["cost"]
         if gross is not None:
             gross.rebalance(exec_row, w_target, FREE)
@@ -218,6 +236,7 @@ def run_backtest(
     )
 
     exits = pd.DataFrame(state.exits)
+    trades = trade_ledger.frame() if trade_ledger is not None else pd.DataFrame()
     elapsed = time.perf_counter() - t_start
     diagnostics = _diagnostics(panel, reb, cov, exits, total_costs, elapsed, state)
 
@@ -231,6 +250,8 @@ def run_backtest(
             "benchmark": benchmark, "n_rebalances": len(reb),
             "holdout_mode": holdout, "touched_holdout": touched,
             "holdout_start": HOLDOUT_START,
+            "feature_version": (features.meta.get("feature_version")
+                                if features is not None else None),
             "strategy_detail": (strategy.describe() if hasattr(strategy, "describe")
                                 else {"name": getattr(strategy, "name", "?")}),
             "panel": panel.meta,
@@ -240,7 +261,7 @@ def run_backtest(
         weights=pd.DataFrame(np.array(weight_rows),
                              index=pd.Index(ledger_df["date"], name="date"),
                              columns=panel.security_ids),
-        exits=exits, costs=total_costs, diagnostics=diagnostics,
+        exits=exits, trades=trades, costs=total_costs, diagnostics=diagnostics,
     )
     if log_run:
         from .registry import log as log_run_to_registry
@@ -268,8 +289,9 @@ class _State:
     other than costs would be a bug.
     """
 
-    def __init__(self, panel: Panel, capital: float):
+    def __init__(self, panel: Panel, capital: float, ledger=None):
         self.p = panel
+        self.ledger = ledger
         self.shares = np.zeros(panel.n_securities, dtype=np.float64)
         self.cash = float(capital)
         self.nav = float(capital)
@@ -282,7 +304,8 @@ class _State:
 
     # ------------------------------------------------------------- rebalance
 
-    def rebalance(self, e: int, w_target: np.ndarray, cost_model: CostModel) -> dict:
+    def rebalance(self, e: int, w_target: np.ndarray, cost_model: CostModel,
+                  signal_date: str = "") -> dict:
         """Trade into `w_target` at the open of session `e`."""
         px = self.p.adj_open[e]
         held = self.shares != 0
@@ -315,35 +338,50 @@ class _State:
         v_current = np.nan_to_num(px) * self.shares
         w_current = v_current / nav_open
 
-        # Costs depend on the trade, the trade depends on how much is investable, and
-        # investable depends on costs. Two passes close the loop to well under a cent.
-        as_traded = self._as_traded_price(e)
-        hs = self.p.half_spread[e].astype(np.float64)
-        cost = CostBreakdown()
-        v_target = w_target * nav_open
-        for _ in range(2):
-            traded = np.abs(v_target - v_current)
-            cost = cost_model.charge(traded, as_traded, hs)
-            v_target = w_target * (nav_open - cost.total)
-
         # A name can be priced at the signal date and have no bar at the execution
         # date - it halted, or that was its final session. Requiring a bar at t+1 to
         # be "tradable" at t would be lookahead: you cannot know on Monday that a
         # stock will not open on Tuesday. What actually happens to a market-on-open
         # order in that case is that it does not fill, so that is what happens here.
         # The intended notional stays in cash and the miss is recorded.
+        #
+        # This is resolved BEFORE costs are priced, not after: an order that never
+        # filled never paid a commission either. Charging it was a real (small) error
+        # until the trade ledger made it visible - the cost total contained dollars
+        # that no executed order could account for. See ADR-029.
         fillable = np.isfinite(px) & (px > 0)
-        unfilled = (v_target != 0) & ~fillable
+        wanted = w_target * nav_open
+        unfilled = (wanted != 0) & ~fillable
         if unfilled.any():
             self.unfilled += int(unfilled.sum())
-            self.unfilled_notional += float(np.abs(v_target[unfilled]).sum())
-            v_target = np.where(fillable, v_target, 0.0)
+            self.unfilled_notional += float(np.abs(wanted[unfilled]).sum())
+            self._wanted = wanted
+            w_target = np.where(fillable, w_target, 0.0)
 
+        # Costs depend on the trade, the trade depends on how much is investable, and
+        # investable depends on costs. Two passes close the loop to well under a cent.
+        as_traded = self._as_traded_price(e)
+        hs = self.p.half_spread[e].astype(np.float64)
+        cost = CostBreakdown()
+        commission = spread = fixed = np.zeros_like(px)
+        v_target = w_target * nav_open
+        for _ in range(2):
+            traded = np.abs(v_target - v_current)
+            cost, commission, spread, fixed = cost_model.charge_detail(
+                traded, as_traded, hs)
+            v_target = w_target * (nav_open - cost.total)
+
+        shares_before = self.shares
         self.shares = np.where(fillable, v_target / np.where(fillable, px, 1.0), 0.0)
         self.cash = nav_open - float(v_target.sum()) - cost.total
         if self.cash < -1e-6 * nav_open:
             raise EngineError(f"cash went to {self.cash:,.2f} on {self.p.dates[e]}; "
                               "leverage is outside the mandate")
+
+        if self.ledger is not None:
+            self._record_orders(e, signal_date, nav_open, v_current, v_target,
+                                w_current, px, as_traded, commission, spread, fixed,
+                                shares_before, unfilled)
 
         return {"nav_open": nav_open, "cash": self.cash, "cost": cost,
                 "turnover": compute_turnover(w_target, w_current),
@@ -352,12 +390,61 @@ class _State:
     def _as_traded_price(self, e: int) -> np.ndarray:
         """The price that actually changed hands, for real share counts.
 
-        Our stored close is split-adjusted (ADR-007), so `raw_close * cum_split` is
-        what a broker would have printed. Only the per-share commission cares, and at
-        retail size the per-order minimum usually dominates it anyway - but getting it
-        backwards would inflate share counts by the split ratio, so it is done right.
+        Our stored prices are split-adjusted (ADR-007), so `raw x cum_split` is what a
+        broker would have printed. The OPEN, because that is the bar orders fill in -
+        the same price the trade ledger shows an outside reader, so the share count in
+        the ledger and the share count the commission was charged on are the same
+        number rather than two numbers that nearly agree (ADR-029).
+
+        At retail size the per-order minimum dominates the per-share rate anyway, so
+        this rarely moves a cost - but getting the split factor backwards would inflate
+        share counts by the whole split ratio, so it is done properly.
         """
-        return self.p.raw_close[e] * self.p.cum_split[e]
+        return self.p.raw_open[e] * self.p.cum_split[e]
+
+    def _record_orders(self, e: int, signal_date: str, nav_open: float,
+                       v_current: np.ndarray, v_target: np.ndarray,
+                       w_current: np.ndarray, px: np.ndarray, as_traded: np.ndarray,
+                       commission: np.ndarray, spread: np.ndarray, fixed: np.ndarray,
+                       shares_before: np.ndarray, unfilled: np.ndarray) -> None:
+        """Write this rebalance into the trade ledger. See trades.py.
+
+        `v_target` here is the post-unfill vector - what was actually bought, not what
+        was wanted - so the cash flows tie to the cash column exactly. The wanted-but-
+        unfillable orders are recorded separately with status 'unfilled', because an
+        order that did not fill is a fact about the run and dropping it would make a
+        month look like a decision nobody made.
+        """
+        delta = v_target - v_current
+        charged = commission + spread + fixed
+        # Union, not just the moves: an order can be priced on one pass of the cost
+        # fixpoint and land on a near-zero delta on the next, and it still paid. Every
+        # name that moved money OR was charged for money gets a row, which is what
+        # makes the cash identity in trades.reconcile() exact rather than approximate.
+        moved = np.flatnonzero((delta != 0.0) | (charged > 0.0))
+        exec_date = str(self.p.dates[e])
+        if len(moved):
+            self.ledger.record_rebalance(
+                signal_date=signal_date or exec_date, exec_date=exec_date, idx=moved,
+                delta_value=delta[moved],
+                adj_shares_delta=(self.shares - shares_before)[moved],
+                adj_price=px[moved], as_traded_price=as_traded[moved],
+                commission=commission[moved], spread=spread[moved],
+                fixed=fixed[moved],
+                weight_before=w_current[moved],
+                weight_after=v_target[moved] / nav_open, nav=nav_open)
+
+        miss = np.flatnonzero(unfilled)
+        if len(miss):
+            zeros = np.zeros(len(miss))
+            self.ledger.record_rebalance(
+                signal_date=signal_date or exec_date, exec_date=exec_date, idx=miss,
+                delta_value=self._wanted[miss] - v_current[miss],
+                adj_shares_delta=zeros, adj_price=px[miss],
+                as_traded_price=as_traded[miss],
+                commission=zeros, spread=zeros.copy(), fixed=zeros.copy(),
+                weight_before=w_current[miss], weight_after=zeros.copy(), nav=nav_open,
+                status="unfilled", reason="no_opening_bar")
 
     # ----------------------------------------------------------------- carry
 
@@ -399,6 +486,9 @@ class _State:
 
     def _resolve(self, at: int, cols: list[int]) -> None:
         """Liquidate positions that cannot be carried past session `at`."""
+        nav_at = (self.cash + float(np.dot(np.nan_to_num(self.p.adj_close[at]),
+                                           self.shares))
+                  if self.ledger is not None else float("nan"))
         for s in cols:
             px = self.p.adj_close[at, s]
             if not np.isfinite(px):
@@ -417,6 +507,13 @@ class _State:
                 "reason": reason, "delist_return": ret,
                 "last_price": float(px), "proceeds": proceeds,
             })
+            if self.ledger is not None:
+                self.ledger.record_exit(
+                    date=str(self.p.dates[at]), security_index=s,
+                    adj_shares=float(self.shares[s]), adj_price=float(px),
+                    as_traded_price=float(self.p.raw_open[at, s]
+                                          * self.p.cum_split[at, s]),
+                    proceeds=proceeds, reason=reason, nav=nav_at)
             self.cash += proceeds
             self.shares[s] = 0.0
 
@@ -431,6 +528,29 @@ class _State:
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+
+def _resolve_features(strategy, features, panel):
+    """Load the shared feature panel when a strategy needs one and none was passed.
+
+    Automatic rather than an argument the caller must remember, because forgetting it
+    does not fail - it hands the strategy a context with no features, every score comes
+    back NaN, and the run reports a flat cash curve as if that were a result. Failing
+    loudly on a missing feature NAME is the other half of the same argument.
+    """
+    needed = tuple(getattr(strategy, "requires_features", ()) or ())
+    if not needed:
+        return features
+    if features is None:
+        from ..features import build_features
+        features = build_features(panel=panel)
+    missing = [n for n in needed if n not in tuple(getattr(features, "names", ()))]
+    if missing:
+        raise EngineError(
+            f"{getattr(strategy, 'name', 'strategy')} needs feature(s) {missing} that "
+            "the feature panel does not have. Rebuild it: "
+            "`python -m sp500lab features build --rebuild`.")
+    return features
+
 
 def _rebalance_rows(panel: Panel, start: str, end_row: int, warmup: int) -> list[int]:
     """Month-end sessions in range that have a following session to execute in.

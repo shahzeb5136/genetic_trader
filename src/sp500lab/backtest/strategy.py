@@ -82,6 +82,18 @@ class BaseStrategy:
     #: rebalances before this, so a strategy never trades on a half-filled window.
     warmup: int = 0
 
+    #: Earliest date this strategy's INPUTS exist. `warmup` counts sessions of price
+    #: history; this is for data that simply did not exist before a date - XBRL
+    #: fundamentals begin 2009-04 whatever the price panel contains. The engine moves
+    #: `start` forward to it rather than letting the strategy sit in cash for three
+    #: years and report the resulting flat stretch as part of its CAGR.
+    min_date: str = ""
+
+    #: Feature columns this strategy reads. When set, `run_backtest` loads the shared
+    #: feature panel automatically and fails loudly if a name is missing, rather than
+    #: handing the strategy a context with no features and letting it score NaN.
+    requires_features: tuple[str, ...] = ()
+
     def __init__(self, **params: Any):
         self.params = dict(params)
         for k, v in params.items():
@@ -89,8 +101,13 @@ class BaseStrategy:
 
     def describe(self) -> dict:
         """Everything needed to reproduce this strategy, for the experiment log."""
-        return {"name": self.name, "class": type(self).__name__,
-                "warmup": self.warmup, "params": _jsonable(self.params)}
+        d = {"name": self.name, "class": type(self).__name__,
+             "warmup": self.warmup, "params": _jsonable(self.params)}
+        if self.requires_features:
+            d["features"] = list(self.requires_features)
+        if self.min_date:
+            d["min_date"] = self.min_date
+        return d
 
     def on_start(self, panel) -> None:
         """Hook called once before the first rebalance.
@@ -158,6 +175,23 @@ class SignalStrategy(BaseStrategy):
         d = super().describe()
         d["construction"] = vars(self.construction).copy()
         return d
+
+
+class FeatureStrategy(SignalStrategy):
+    """A SignalStrategy whose inputs come from the shared feature panel.
+
+    Subclasses declare `requires_features` and read them with `self.f(ctx, name)`. The
+    point of the indirection is that no strategy computes an indicator: two strategies
+    ranking on `mom_12_1` are ranking on the SAME numbers, so a difference in their
+    results is a difference in their idea (see features/panel.py).
+    """
+
+    def f(self, ctx: Context, name: str) -> np.ndarray:
+        """(S,) one feature column, aligned to `ctx.security_ids`."""
+        return ctx.feature(name)
+
+    def eligible(self, ctx: Context) -> np.ndarray:
+        return ctx.tradable
 
 
 class FunctionStrategy(BaseStrategy):

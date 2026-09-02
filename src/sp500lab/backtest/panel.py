@@ -76,7 +76,7 @@ DEFAULT_EXIT_DAYS = 45
 PANEL_CACHE_DIR = GOLD_DIR / "backtest" / "panel"
 
 #: Bumped whenever the on-disk layout changes, so a stale cache is never loaded.
-PANEL_FORMAT_VERSION = 5
+PANEL_FORMAT_VERSION = 6
 
 
 @dataclass
@@ -95,6 +95,7 @@ class Panel:
     adj_close: np.ndarray        # (D,S) float64, total-return adjusted, NaN where no bar
     adj_open: np.ndarray         # (D,S) float64, execution price
     raw_close: np.ndarray        # (D,S) float64, as-stored close (split-adjusted, ADR-007)
+    raw_open: np.ndarray         # (D,S) float64, as-stored open - the execution print
     cum_split: np.ndarray        # (D,S) float64, ratio to recover as-traded share counts
 
     dollar_volume: np.ndarray    # (D,S) float32, trailing median, knowable at date
@@ -184,6 +185,7 @@ class Panel:
             dates=self.dates, security_ids=self.security_ids, tickers=self.tickers,
             tiebreak=self.tiebreak,
             adj_close=self.adj_close, adj_open=self.adj_open, raw_close=self.raw_close,
+            raw_open=self.raw_open,
             cum_split=self.cum_split, dollar_volume=self.dollar_volume,
             half_spread=self.half_spread, in_index=self.in_index, has_price=self.has_price,
             first_bar_index=self.first_bar_index, last_bar_index=self.last_bar_index,
@@ -305,6 +307,7 @@ def _build(start: str, end: str | None, *, warmup_days: int, exit_days: int,
     adj_close = _mat(bars["adj_close"])
     adj_open = _mat(bars["adj_open"])
     raw_close = _mat(bars["close"])
+    raw_open = _mat(bars["open"])
     volume = _mat(bars["volume"])
 
     has_price = np.isfinite(adj_close) & (adj_close > 0)
@@ -315,6 +318,9 @@ def _build(start: str, end: str | None, *, warmup_days: int, exit_days: int,
     n_open_gap = int(open_gap.sum())
     if n_open_gap:
         adj_open = np.where(open_gap, adj_close, adj_open)
+        # Fill the as-traded open the same way, from the same bar, so the price the
+        # trade ledger prints is always the price the engine actually executed at.
+        raw_open = np.where(open_gap, raw_close, raw_open)
         log.warning("panel: %d bars had no usable open; filled from close", n_open_gap)
 
     # Trailing median dollar volume - trailing, so it is knowable at every date.
@@ -355,7 +361,8 @@ def _build(start: str, end: str | None, *, warmup_days: int, exit_days: int,
     return Panel(
         dates=dates, security_ids=sids, tickers=tickers,
         tiebreak=stable_tiebreak(sids),
-        adj_close=adj_close, adj_open=adj_open, raw_close=raw_close, cum_split=cum_split,
+        adj_close=adj_close, adj_open=adj_open, raw_close=raw_close, raw_open=raw_open,
+        cum_split=cum_split,
         dollar_volume=dollar_volume, half_spread=half_spread,
         in_index=in_index, has_price=has_price,
         first_bar_index=first_bar_index, last_bar_index=last_bar_index,

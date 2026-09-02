@@ -20,6 +20,10 @@ data/experiments/ Append-only record of every backtest run, and the holdout ledg
                Provenance for research rather than for ingestion: you cannot
                re-derive what you tried, so it is treated like bronze - append-only,
                never rewritten, and backed up. See docs/EXPERIMENTS.md.
+data/experiments/forward/
+               The out-of-sample record: pre-registrations, forward tests and their
+               curves. The most irreplaceable directory in the project - a forward
+               test consumes a period that only exists once. See docs/FORWARD_TEST.md.
 """
 
 from __future__ import annotations
@@ -54,13 +58,25 @@ HOLDOUT_LOG = EXPERIMENTS_DIR / "holdout_log.jsonl"
 #: so the searchable index stays small - see ADR-027.
 CURVE_LOG = EXPERIMENTS_DIR / "curves.jsonl"
 
+#: Forward testing - the out-of-sample record. Kept in its own directory rather than
+#: mixed into the trial log because these files are a different KIND of thing: there
+#: will be a handful of them ever, each one spends a resource that cannot be replaced,
+#: and none of them may be silenced by SP500LAB_REGISTRY=off. See ADR-033/034.
+FORWARD_DIR = EXPERIMENTS_DIR / "forward"
+#: One line per pre-registered candidate: what was predicted, before the look.
+SEAL_LOG = FORWARD_DIR / "seals.jsonl"
+#: One line per forward test: the prediction, the outcome, and the gap between them.
+FORWARD_LOG = FORWARD_DIR / "forward_runs.jsonl"
+#: Month-end curves for both windows of a forward test, keyed by forward_id.
+FORWARD_CURVE_LOG = FORWARD_DIR / "forward_curves.jsonl"
+
 #: Generated HTML reports. Disposable: rebuildable from the registry at any time.
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
 ALL_DIRS = [
     CONFIG_DIR, DOCS_DIR, LOGS_DIR, DATA_DIR,
     BRONZE_DIR, SILVER_DIR, GOLD_DIR, VAULT_DIR, CACHE_DIR, MANIFEST_DIR,
-    EXPERIMENTS_DIR,
+    EXPERIMENTS_DIR, FORWARD_DIR,
 ]
 
 

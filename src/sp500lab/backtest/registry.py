@@ -79,6 +79,7 @@ import subprocess
 import time
 import uuid
 from contextlib import contextmanager
+from functools import lru_cache
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Iterator
 
@@ -138,6 +139,16 @@ def _day_before(date: str) -> str:
     return str((pd.Timestamp(date) - pd.Timedelta(days=1)).date())
 
 
+def research_end() -> str:
+    """The last date a search may see. Everything after it is the holdout.
+
+    A named function rather than callers computing `HOLDOUT_START - 1 day` themselves,
+    so that moving the boundary - which nobody should do - would at least move it
+    everywhere at once.
+    """
+    return _day_before(HOLDOUT_START)
+
+
 def record_holdout_touch(*, strategy: str, study: str | None, mode: str,
                          start: str, end: str, reason: str = "") -> None:
     """Append to the holdout ledger. Deliberately not disableable.
@@ -146,7 +157,7 @@ def record_holdout_touch(*, strategy: str, study: str | None, mode: str,
     shown you something, and the conservative reading of "did I look at it" is the only
     one worth keeping.
     """
-    _append(HOLDOUT_LOG, {
+    append_jsonl(HOLDOUT_LOG, {
         "at": _now_iso(),
         "strategy": strategy,
         "study": study,
@@ -166,11 +177,11 @@ def record_holdout_touch(*, strategy: str, study: str | None, mode: str,
 
 def holdout_touches() -> pd.DataFrame:
     """Every recorded look at the holdout, oldest first. Read this before the final test."""
-    return pd.DataFrame(list(_read(HOLDOUT_LOG)))
+    return pd.DataFrame(list(read_jsonl(HOLDOUT_LOG)))
 
 
 def holdout_touch_count() -> int:
-    return sum(1 for _ in _read(HOLDOUT_LOG))
+    return sum(1 for _ in read_jsonl(HOLDOUT_LOG))
 
 
 # --------------------------------------------------------------------------
@@ -324,8 +335,8 @@ def fingerprint(*, strategy_class: str, params: dict, construction: dict | None,
     version is recorded separately in `data_fingerprint` for reproducibility.
     """
     payload = json.dumps({
-        "cls": strategy_class, "params": _jsonable(params),
-        "construction": _jsonable(construction),
+        "cls": strategy_class, "params": jsonable(params),
+        "construction": jsonable(construction),
         "start": start, "end": end, "cost_model": cost_model,
         "capital": round(float(initial_capital), 2),
         "liquidity_floor": float(liquidity_floor), "seed": int(seed),
@@ -371,8 +382,8 @@ def log(result: "BacktestResult", *, study: str | None = None, notes: str = "",
 
         strategy=result.strategy,
         strategy_class=detail.get("class", ""),
-        params=_jsonable(detail.get("params", {})),
-        construction=_jsonable(detail.get("construction")),
+        params=jsonable(detail.get("params", {})),
+        construction=jsonable(detail.get("construction")),
         warmup=int(detail.get("warmup", 0) or 0),
         start=cfg.get("start", ""), end=cfg.get("end", ""),
         holdout_mode=cfg.get("holdout_mode", "exclude"),
@@ -408,10 +419,10 @@ def log(result: "BacktestResult", *, study: str | None = None, notes: str = "",
         git_commit=commit, git_dirty=dirty,
         panel_key=str(cfg.get("panel", {}).get("start", "")) + ".."
                   + str(cfg.get("panel", {}).get("end", "")),
-        data_fingerprint=_data_fingerprint(cfg.get("panel", {})),
+        data_fingerprint=panel_fingerprint(cfg.get("panel", {})),
         runtime_seconds=float(diag.get("runtime_seconds", 0.0) or 0.0),
     )
-    _append(EXPERIMENT_LOG, rec.as_dict())
+    append_jsonl(EXPERIMENT_LOG, rec.as_dict())
     if curve:
         log_curve(rec.run_id, result)
     return rec
@@ -472,7 +483,7 @@ def log_curve(run_id: str, result: "BacktestResult") -> bool:
                          ("benchmark", result.benchmark)):
         if series is None:
             continue
-        m = _to_monthly(series)
+        m = to_monthly(series)
         if m is None or m.empty:
             continue
         if dates is None:
@@ -485,11 +496,17 @@ def log_curve(run_id: str, result: "BacktestResult") -> bool:
 
     if dates is None:
         return False
-    _append(CURVE_LOG, payload)
+    append_jsonl(CURVE_LOG, payload)
     return True
 
 
-def _to_monthly(series: pd.Series) -> pd.Series | None:
+def to_monthly(series: pd.Series) -> pd.Series | None:
+    """Month-end samples of a daily curve, indexed by 'YYYY-MM-DD' strings.
+
+    Public for the same reason as `append_jsonl`: the forward store writes curves too,
+    and both must land on the same date grid or a stitched research-to-forward chart
+    would have two different month ends.
+    """
     s = series.dropna().astype(float)
     if len(s) < 2:
         return None
@@ -510,7 +527,7 @@ def load_curves(run_ids: "list[str] | str | None" = None) -> dict[str, pd.DataFr
     wanted = set(run_ids) if run_ids is not None else None
 
     out: dict[str, pd.DataFrame] = {}
-    for rec in _read(CURVE_LOG):
+    for rec in read_jsonl(CURVE_LOG):
         rid = rec.get("run_id")
         if wanted is not None and rid not in wanted:
             continue
@@ -570,7 +587,7 @@ def monthly_stats(equity: pd.Series) -> dict:
 
 def load(study: str | None = None) -> pd.DataFrame:
     """Every logged run, newest last. Filter to one study by name."""
-    rows = list(_read(EXPERIMENT_LOG))
+    rows = list(read_jsonl(EXPERIMENT_LOG))
     if not rows:
         return pd.DataFrame(columns=[f.name for f in RunRecord.__dataclass_fields__.values()])
     df = pd.DataFrame(rows)
@@ -717,8 +734,12 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _append(path, record: dict) -> None:
+def append_jsonl(path, record: dict) -> None:
     """Append one JSON line, healing a truncated previous write first.
+
+    Public because the forward-test store (`forward/store.py`) keeps its own
+    append-only logs and must not reimplement the healing below - two copies of a
+    subtle recovery path is how one of them ends up wrong.
 
     A process killed mid-write leaves a partial final line with no newline. Appending
     straight onto it would concatenate the two records and destroy the good one as well
@@ -741,7 +762,7 @@ def _append(path, record: dict) -> None:
         fh.write(json.dumps(record, sort_keys=True, default=str) + "\n")
 
 
-def _read(path) -> Iterator[dict]:
+def read_jsonl(path) -> Iterator[dict]:
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -756,8 +777,15 @@ def _read(path) -> Iterator[dict]:
             log_.warning("skipping unparseable line in %s", path.name)
 
 
+@lru_cache(maxsize=1)
 def git_state() -> tuple[str, bool]:
-    """(commit, dirty). A result from a dirty tree is not reproducible; say so."""
+    """(commit, dirty). A result from a dirty tree is not reproducible; say so.
+
+    Cached for the life of the process. Two subprocesses per logged run is nothing for a
+    single backtest and about 30 seconds of pure overhead across a 1,500-individual
+    genetic search - and the commit does not change under a running process in any
+    workflow that is not already lying about its own provenance.
+    """
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
                                 text=True, timeout=5).stdout.strip() or "unknown"
@@ -790,8 +818,13 @@ def _int_from_diag(value: Any) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _data_fingerprint(panel_meta: dict) -> str:
-    """Short hash of the dataset the run saw, for reproducibility (not for trial counts)."""
+def panel_fingerprint(panel_meta: dict) -> str:
+    """Short hash of the dataset the run saw, for reproducibility (not for trial counts).
+
+    Public because the forward-test seal stores it too: a prediction made against one
+    vintage of the price data and checked against another is a different experiment,
+    and this is the only field that can show it.
+    """
     if not panel_meta:
         return ""
     payload = json.dumps({k: panel_meta.get(k) for k in
@@ -807,11 +840,17 @@ def _finite(x: float | None) -> float:
     return float(x) if np.isfinite(x) else float("nan")
 
 
-def _jsonable(obj: Any) -> Any:
+def jsonable(obj: Any) -> Any:
+    """Coerce numpy scalars, arrays and stray objects into something json.dumps accepts.
+
+    Public so the forward-test records serialise parameters exactly the way the trial
+    log does - two different coercions would produce two different fingerprints for
+    one strategy.
+    """
     if isinstance(obj, dict):
-        return {str(k): _jsonable(v) for k, v in obj.items()}
+        return {str(k): jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_jsonable(v) for v in obj]
+        return [jsonable(v) for v in obj]
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, np.ndarray):

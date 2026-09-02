@@ -88,16 +88,39 @@ class CostModel:
         as_traded_price: np.ndarray,
         half_spread: np.ndarray,
     ) -> "CostBreakdown":
-        """Cost of one rebalance.
+        """Cost of one rebalance, as a single summed breakdown.
 
         traded_notional  (S,) absolute value traded per security, in dollars
         as_traded_price  (S,) the price that actually changed hands, for share counts
         half_spread      (S,) proportional half-spread estimate; NaN -> fallback
         """
+        return self.charge_detail(traded_notional, as_traded_price, half_spread)[0]
+
+    def charge_detail(
+        self,
+        traded_notional: np.ndarray,
+        as_traded_price: np.ndarray,
+        half_spread: np.ndarray,
+    ) -> "tuple[CostBreakdown, np.ndarray, np.ndarray, np.ndarray]":
+        """The same charge, plus the per-security commission and spread it summed.
+
+        The trade ledger needs to attribute every dollar of cost to the order that
+        incurred it, and re-deriving that outside this method would let the two
+        drift apart - which is exactly the kind of divergence a second party checking
+        the numbers would find. So there is one implementation and `charge()` is the
+        view of it that throws the detail away.
+
+        Returns (breakdown, commission, spread, fixed), the last three being (S,)
+        arrays that are zero where nothing traded and sum back to the matching
+        breakdown fields exactly. Exactly, not approximately: the ledger asserts it,
+        because a cost that appears in the total and in no order is a cost nobody can
+        check.
+        """
         traded = np.abs(np.asarray(traded_notional, dtype=np.float64))
         active = traded > 0
+        zero = np.zeros(traded.shape[0], dtype=np.float64)
         if not active.any():
-            return CostBreakdown()
+            return CostBreakdown(), zero, zero.copy(), zero.copy()
 
         px = np.asarray(as_traded_price, dtype=np.float64)
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -107,7 +130,8 @@ class CostModel:
         floored = np.maximum(by_rate, self.min_commission)
         cap = traded * self.max_commission_pct
         per_order = np.minimum(floored, cap) if self.max_commission_pct > 0 else floored
-        commission = float(per_order[active].sum())
+        commission_by_name = np.where(active, per_order, 0.0)
+        commission = float(commission_by_name.sum())
 
         # Which of the three terms actually set the price. At retail size the minimum
         # dominates, and on very small drift trades the 1% cap dominates that - a
@@ -120,11 +144,13 @@ class CostModel:
         hs = np.asarray(half_spread, dtype=np.float64)
         missing = active & ~np.isfinite(hs)
         hs = np.where(np.isfinite(hs), hs, self.fallback_half_spread)
-        spread = float((traded * hs).sum() * self.spread_multiple)
+        spread_by_name = traded * hs * self.spread_multiple
+        spread = float(spread_by_name.sum())
 
-        fixed = float(traded.sum() * self.fixed_bps * 1e-4)
+        fixed_by_name = traded * (self.fixed_bps * 1e-4)
+        fixed = float(fixed_by_name.sum())
 
-        return CostBreakdown(
+        breakdown = CostBreakdown(
             commission=commission, spread=spread, fixed=fixed,
             traded_notional=float(traded.sum()),
             n_orders=int(active.sum()),
@@ -132,6 +158,7 @@ class CostModel:
             n_min_commission=int(at_min.sum()),
             n_cap_commission=int(at_cap.sum()),
         )
+        return breakdown, commission_by_name, spread_by_name, fixed_by_name
 
 
 @dataclass
