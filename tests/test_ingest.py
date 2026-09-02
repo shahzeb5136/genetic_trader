@@ -230,3 +230,68 @@ def test_ingest_result_summarises_itself():
     r.errors.append("boom")
     d = r.as_dict() if hasattr(r, "as_dict") else vars(r)
     assert d["source"] == "s" and d["rows"] == 10 and d["errors"] == ["boom"]
+
+
+# --------------------------------------------------------------- Fama-French
+
+FF5_TEXT = """This file was created by CMPT_ME_BEME_OP_INV_RETS_DAILY using the 202508 CRSP database.
+The 1-month TBill return is from Ibbotson and Associates, Inc.
+
+,Mkt-RF,SMB,HML,RMW,CMA,RF
+19630701,-0.67,0.02,-0.35,0.03,0.13,0.012
+19630702,0.79,-0.28,0.28,-0.08,-0.21,0.012
+19630703,0.63,-0.18,-0.10,0.13,-0.25,0.012
+19630705,-99.99,0.09,-0.10,0.15,-0.05,0.012
+
+Copyright 2025 Kenneth R. French
+"""
+
+MOM_TEXT = """This file was created using the 202508 CRSP database.
+
+,Mom
+19261103,0.56
+19630701,-0.11
+19630702,0.18
+"""
+
+
+def test_ff_parser_finds_the_header_and_converts_percent_to_decimal():
+    from sp500lab.ingest.fama_french import FILES, parse_factor_csv
+    df = parse_factor_csv(FF5_TEXT, FILES["F-F_Research_Data_5_Factors_2x3_daily_CSV.zip"])
+    assert df["date"].tolist() == ["1963-07-01", "1963-07-02", "1963-07-03", "1963-07-05"]
+    assert df.loc[0, "mkt_rf"] == pytest.approx(-0.0067)
+    assert df.loc[0, "rf"] == pytest.approx(0.00012)
+    assert np.isnan(df.loc[3, "mkt_rf"]), "-99.99 is the library's missing marker"
+    assert list(df.columns) == ["date", "mkt_rf", "smb", "hml", "rmw", "cma", "rf"]
+
+
+def test_ff_parser_stops_at_the_copyright_trailer_and_rejects_the_wrong_file():
+    from sp500lab.ingest.fama_french import parse_factor_csv
+    mom = parse_factor_csv(MOM_TEXT, ("Mom",))
+    assert len(mom) == 3 and mom.loc[0, "mom"] == pytest.approx(0.0056)
+    with pytest.raises(ValueError, match="no header row"):
+        parse_factor_csv(MOM_TEXT, ("Mkt-RF", "SMB"))
+    with pytest.raises(ValueError, match="no data rows"):
+        parse_factor_csv(",Mom\nCopyright\n", ("Mom",))
+
+
+def test_ff_zip_reader_takes_the_csv_inside():
+    import io
+    import zipfile
+
+    from sp500lab.ingest.fama_french import _csv_from_zip
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("F-F_Momentum_Factor_daily.CSV", MOM_TEXT)
+    assert "19261103,0.56" in _csv_from_zip(buf.getvalue())
+    empty = io.BytesIO()
+    with zipfile.ZipFile(empty, "w") as z:
+        z.writestr("readme.txt", "nothing")
+    with pytest.raises(ValueError, match="no CSV"):
+        _csv_from_zip(empty.getvalue())
+
+
+def test_ff_files_and_columns_agree():
+    from sp500lab.ingest.fama_french import COLUMNS, FILES
+    for expect in FILES.values():
+        assert all(c in COLUMNS for c in expect)

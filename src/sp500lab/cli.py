@@ -54,8 +54,16 @@ def cmd_init(args) -> int:
 
 
 def cmd_ingest(args) -> int:
-    from .ingest import (benchmarks, fred, prices_yfinance, sec_companyfacts,
-                         sec_tickers, wikipedia_history, wikipedia_sp500)
+    from .ingest import (
+        benchmarks,
+        fama_french,
+        fred,
+        prices_yfinance,
+        sec_companyfacts,
+        sec_tickers,
+        wikipedia_history,
+        wikipedia_sp500,
+    )
 
     jobs = {
         "sec-tickers":  lambda: sec_tickers.run(force=args.force),
@@ -64,6 +72,7 @@ def cmd_ingest(args) -> int:
                                                       limit=args.limit),
         "benchmarks":   lambda: benchmarks.run(force=args.force, start=args.start),
         "fred":         lambda: fred.run(force=args.force),
+        "fama-french":  lambda: fama_french.run(force=args.force),
         "prices":       lambda: prices_yfinance.run(force=args.force,
                                                     universe=args.universe,
                                                     start=args.start, limit=args.limit),
@@ -73,9 +82,9 @@ def cmd_ingest(args) -> int:
                                                      all_tags=args.all_tags),
     }
 
-    # Dependency-ordered: identity -> universe -> calendar -> prices -> fundamentals
+    # Dependency-ordered: identity -> universe -> calendar -> factors -> prices -> fundamentals
     ALL_ORDER = ["sec-tickers", "wiki-current", "wiki-history",
-                 "benchmarks", "fred", "prices", "fundamentals"]
+                 "benchmarks", "fred", "fama-french", "prices", "fundamentals"]
 
     targets = ALL_ORDER if args.dataset == "all" else [args.dataset]
     failed = 0
@@ -122,6 +131,14 @@ def cmd_verify(args) -> int:
         return 1
     print("\nAll bronze artifacts match their recorded checksums.")
     return 0
+
+
+def cmd_doctor(args) -> int:
+    from . import doctor
+    stages = doctor.run(fast=args.fast, roster=args.roster,
+                        include_learned=args.include_learned)
+    print(doctor.report(stages))
+    return 1 if any(not s.passed for s in stages) else 0
 
 
 def cmd_status(args) -> int:
@@ -196,7 +213,8 @@ typical first run:
 then, to backtest:
   python -m sp500lab backtest build-delisting   # exit assumptions -> gold/
   python -m sp500lab backtest build-spreads     # cost inputs      -> gold/
-  python -m sp500lab backtest accept            # MUST pass before trusting anything
+  python -m sp500lab doctor                     # MUST pass before trusting anything
+  python -m sp500lab doctor --roster            # ...and every strategy, before a release
   python -m sp500lab backtest baselines
 
 research discipline (docs/EXPERIMENTS.md):
@@ -222,7 +240,8 @@ visualise it (docs/REPORTS.md):
 
     i = sub.add_parser("ingest", help="fetch a dataset into bronze + silver")
     i.add_argument("dataset", choices=["all", "sec-tickers", "wiki-current", "wiki-history",
-                                       "benchmarks", "fred", "prices", "fundamentals"])
+                                       "benchmarks", "fred", "fama-french", "prices",
+                                       "fundamentals"])
     i.add_argument("--force", action="store_true", help="bypass cache and re-fetch")
     i.add_argument("--start", default=None, help="start date (YYYY-MM-DD)")
     i.add_argument("--limit", type=int, default=None, help="cap items processed (testing)")
@@ -246,7 +265,19 @@ visualise it (docs/REPORTS.md):
     sub.add_parser("status", help="what exists, how big, quality summary"
                    ).set_defaults(func=cmd_status)
 
-    from .backtest.cli import add_experiments_parser, add_parser as add_backtest_parser
+    d = sub.add_parser("doctor", help="every check across data and algorithms, one exit "
+                                      "code - run before trusting any number")
+    d.add_argument("--fast", action="store_true",
+                   help="skip the bronze re-hash and the feature-leakage rebuild")
+    d.add_argument("--roster", action="store_true",
+                   help="also run every strategy through the contract and lookahead "
+                        "checks (a few minutes)")
+    d.add_argument("--include-learned", action="store_true",
+                   help="with --roster: include the slow model-training family")
+    d.set_defaults(func=cmd_doctor)
+
+    from .backtest.cli import add_experiments_parser
+    from .backtest.cli import add_parser as add_backtest_parser
     from .evolve.cli import add_parser as add_evolve_parser
     from .features.cli import add_parser as add_features_parser
     from .forward.cli import add_parser as add_forward_parser

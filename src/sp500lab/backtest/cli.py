@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import sys
-
 from pathlib import Path
 
 from ..paths import PROJECT_ROOT
@@ -109,6 +108,11 @@ def add_parser(sub) -> None:
 
     a = bs.add_parser("accept", help="the acceptance checks - run before trusting anything")
     a.add_argument("--start", default="2007-04-01")
+    a.add_argument("--strategies", default=None, metavar="NAMES",
+                   help="also run checks 6-7 (contract, no lookahead) over 'all' or a "
+                        "comma-separated list of strategies; a few minutes for the roster")
+    a.add_argument("--include-learned", action="store_true",
+                   help="with --strategies all: include the slow model-training family")
     a.set_defaults(func=cmd_accept)
 
     ls = bs.add_parser("list", help="registered strategies")
@@ -272,8 +276,7 @@ def cmd_trades(args) -> int:
     """
     from . import run_backtest
     from .strategy import get_strategy
-    from .trades import (format_reconcile, holdings, most_traded, reconcile,
-                         summarise, write_csv)
+    from .trades import format_reconcile, holdings, most_traded, reconcile, summarise, write_csv
 
     strat = get_strategy(args.strategy)
     _apply_construction_overrides(strat, args)
@@ -370,8 +373,14 @@ def cmd_suite(args) -> int:
 
 
 def cmd_accept(args) -> int:
-    from .accept import report, run_all
-    checks = run_all(start=args.start)
+    from .accept import report, run_all, run_strategy_checks
+    from .panel import build_panel
+    panel = build_panel()
+    checks = run_all(panel=panel, start=args.start)
+    if args.strategies:
+        names = tuple(args.strategies.split(",")) if args.strategies != "all" else None
+        checks += run_strategy_checks(panel, include_learned=args.include_learned,
+                                      names=names)
     print(report(checks))
     return 1 if any(not c.passed for c in checks) else 0
 

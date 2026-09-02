@@ -45,11 +45,43 @@ SOURCE = "yfinance"
 DATASET = "benchmarks"
 
 BENCHMARKS = {
+    # -- the scoreboard: what every strategy is measured against
     "SPY":   "SPDR S&P 500 ETF (total return proxy, cap weighted)",
     "RSP":   "Invesco S&P 500 Equal Weight ETF",
     "^GSPC": "S&P 500 price index level",
     "IWM":   "iShares Russell 2000 ETF",
     "^VIX":  "CBOE Volatility Index",
+    # -- volatility term structure: the shape of the curve is a regime signal the
+    #    level alone is not (backwardation = stress). 9-day begins 2011, 3-month 2007.
+    "^VIX9D": "CBOE 9-day Volatility Index",
+    "^VIX3M": "CBOE 3-month Volatility Index",
+    # -- the eleven GICS sectors as SPDR ETFs, for sector rotation and relative
+    #    strength on a daily grid. Real Estate and Communication Services were carved
+    #    out in 2015 and 2018; before that their names sat inside Financials and Tech.
+    "XLK":  "Technology Select Sector SPDR",
+    "XLF":  "Financial Select Sector SPDR",
+    "XLE":  "Energy Select Sector SPDR",
+    "XLV":  "Health Care Select Sector SPDR",
+    "XLI":  "Industrial Select Sector SPDR",
+    "XLP":  "Consumer Staples Select Sector SPDR",
+    "XLY":  "Consumer Discretionary Select Sector SPDR",
+    "XLU":  "Utilities Select Sector SPDR",
+    "XLB":  "Materials Select Sector SPDR",
+    "XLRE": "Real Estate Select Sector SPDR (from 2015-10)",
+    "XLC":  "Communication Services Select Sector SPDR (from 2018-06)",
+    # -- cross-asset regime set: rates, credit, gold, the dollar, commodities
+    "TLT":  "iShares 20+ Year Treasury Bond ETF",
+    "IEF":  "iShares 7-10 Year Treasury Bond ETF",
+    "SHY":  "iShares 1-3 Year Treasury Bond ETF",
+    "LQD":  "iShares iBoxx Investment Grade Corporate Bond ETF",
+    "HYG":  "iShares iBoxx High Yield Corporate Bond ETF (from 2007-04)",
+    "GLD":  "SPDR Gold Shares (from 2004-11)",
+    "UUP":  "Invesco DB US Dollar Index Bullish (from 2007-02)",
+    "DBC":  "Invesco DB Commodity Index Tracking (from 2006-02)",
+    # -- size and style references beyond the S&P 500
+    "QQQ":  "Invesco QQQ (Nasdaq-100)",
+    "MDY":  "SPDR S&P MidCap 400 ETF",
+    "VTI":  "Vanguard Total Stock Market ETF (from 2001-05)",
 }
 
 CALENDAR_SOURCE = "SPY"

@@ -65,8 +65,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..paths import GOLD_DIR
 from ..backtest.panel import Panel, build_panel
+from ..paths import GOLD_DIR
 
 log = logging.getLogger(__name__)
 
@@ -290,11 +290,20 @@ def _as_grid(mat: np.ndarray, r: int, s: int, name: str) -> np.ndarray:
 
 
 def _cache_key(panel: Panel, families: tuple[str, ...], rows: np.ndarray) -> str:
+    """Identity of a feature build: the feature version, the families, and the panel.
+
+    The panel's extent is read from its ARRAYS, not from `panel.meta`. `truncate_panel`
+    slices the arrays and leaves `meta["end"]` and `meta["n_dates"]` describing the
+    original - so a key built from meta alone would let a truncated panel load the full
+    panel's cached features, which is the leak the truncation exists to test for.
+    """
     payload = json.dumps({
         "v": FEATURE_VERSION,
         "families": sorted(families),
-        "panel": {k: panel.meta.get(k) for k in
-                  ("start", "end", "n_dates", "n_securities", "format_version")},
+        "panel": {"start": panel.meta.get("start"),
+                  "first": str(panel.dates[0]), "last": str(panel.dates[-1]),
+                  "n_dates": int(panel.n_dates), "n_securities": int(len(panel.security_ids)),
+                  "format_version": panel.meta.get("format_version")},
         "n_rows": int(len(rows)),
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]

@@ -161,6 +161,10 @@ SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
         "required": ("series_id", "date", "value", "revised"),
         "dates": ("date",), "numeric": ("value",),
     },
+    "factors/fama_french_daily": {
+        "required": ("date", "mkt_rf", "smb", "hml", "rmw", "cma", "rf", "mom"),
+        "dates": ("date",), "numeric": ("mkt_rf", "smb", "hml", "rmw", "cma", "rf", "mom"),
+    },
 }
 
 
@@ -1120,6 +1124,76 @@ def check_spy_tracks_index(bench: pd.DataFrame) -> list[dict]:
                                           else ""), rows=len(rs))]
 
 
+def check_ff_market_vs_spy(ff: pd.DataFrame, bench: pd.DataFrame) -> list[dict]:
+    """The Fama-French market factor and SPY are two vendors' view of one market.
+
+    `mkt_rf + rf` is CRSP's value-weighted total return on every US stock; SPY is the
+    largest 500 of them. Their daily returns correlate above 0.98. Anything lower means
+    the factor parser lost a decimal (percent vs fraction shows up as a correlation of
+    ~1.0 with the wrong SCALE, so the slope is checked too) or one series is shifted.
+    """
+    ent = "factors/fama_french_daily"
+    need = {"date", "mkt_rf", "rf"}
+    if not need.issubset(ff.columns):
+        return []
+    s = bench[bench["ticker"] == "SPY"].set_index("date")["adj_close_vendor"].sort_index()
+    if s.dropna().empty:
+        s = bench[bench["ticker"] == "SPY"].set_index("date")["close"].sort_index()
+    f = ff.dropna(subset=["mkt_rf", "rf"]).set_index("date")
+    common = s.index.intersection(f.index)
+    if len(common) < 250:
+        return []
+    spy_ret = s[common].pct_change().dropna()
+    mkt = (f.loc[common, "mkt_rf"] + f.loc[common, "rf"]).loc[spy_ret.index]
+    corr = float(np.corrcoef(spy_ret, mkt)[0, 1])
+    slope = float(np.polyfit(mkt, spy_ret, 1)[0])
+    problems = []
+    if corr < 0.98:
+        problems.append(f"correlation {corr:.4f} < 0.98")
+    if not 0.8 <= slope <= 1.2:
+        problems.append(f"slope {slope:.3f} - a unit or scale error in one series")
+    if problems:
+        return [_finding("cross_source_ff", ERROR, ent,
+                         "SPY does not track the Fama-French market factor: "
+                         + "; ".join(problems), rows=len(spy_ret))]
+    return [_finding("cross_source_ff", INFO, ent,
+                     f"SPY vs Fama-French Mkt-RF+RF: correlation {corr:.4f}, slope "
+                     f"{slope:.3f} over {len(spy_ret)} days", rows=len(spy_ret))]
+
+
+def check_factor_sanity(ff: pd.DataFrame) -> list[dict]:
+    """Daily factor returns are small numbers in decimals; anything else is a parse bug."""
+    ent = "factors/fama_french_daily"
+    out = []
+    cols = [c for c in ("mkt_rf", "smb", "hml", "rmw", "cma", "mom") if c in ff.columns]
+    for c in cols:
+        v = ff[c].dropna()
+        if v.empty:
+            out.append(_finding("factors", ERROR, ent, f"{c} has no values"))
+            continue
+        # The worst day in the record is October 1987 at about -17%. A |return| above
+        # 0.30 has never happened; above 1.0 the column is still in percent.
+        big = (v.abs() > 0.30).sum()
+        if big:
+            sev = ERROR if v.abs().max() > 1.0 else WARN
+            out.append(_finding("factors", sev, ent,
+                                f"{c}: {int(big)} daily returns beyond +/-30% "
+                                f"(max |{v.abs().max():.3f}|) - percent left undivided?",
+                                rows=int(big)))
+    if "rf" in ff.columns:
+        rf = ff["rf"].dropna()
+        if len(rf) and ((rf < -1e-6) | (rf > 0.001)).any():
+            out.append(_finding("factors", WARN, ent,
+                                "rf outside [0, 0.1%] per day - the T-bill rate is never "
+                                "negative and never above ~25%/yr",
+                                rows=int(((rf < -1e-6) | (rf > 0.001)).sum())))
+    dup = ff["date"].duplicated(keep=False)
+    if dup.any():
+        out.append(_finding("factors", ERROR, ent, f"{int(dup.sum())} duplicate dates",
+                            rows=int(dup.sum())))
+    return out
+
+
 # ==========================================================================
 # Gold
 # ==========================================================================
@@ -1325,6 +1399,13 @@ def run(*, verify_bronze: bool = True) -> pd.DataFrame:
             _safe(findings, "cross_source_vix", lambda: check_vix_cross_source(macro, bench))
     _safe(findings, "macro_history_depth", check_macro_history_depth)
     _safe(findings, "changes_completeness", check_changes_completeness)
+
+    ff = _load("factors/fama_french_daily")
+    if ff is not None:
+        _safe(findings, "schema", lambda: check_schema("factors/fama_french_daily", ff))
+        _safe(findings, "factors", lambda: check_factor_sanity(ff))
+        if bench is not None:
+            _safe(findings, "cross_source_ff", lambda: check_ff_market_vs_spy(ff, bench))
 
     from ..paths import GOLD_DIR
     sp = GOLD_DIR / "backtest" / "half_spread" / "data.parquet"

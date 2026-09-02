@@ -535,6 +535,43 @@ def test_spy_must_track_the_index():
     assert _sev(Q.check_spy_tracks_index(pd.concat([spy, gspc])), "cross_source_spy") == [ERROR]
 
 
+def _ff(n=400, scale=1.0, seed=2):
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2019-01-01", periods=n).strftime("%Y-%m-%d")
+    mkt = rng.normal(0.0004, 0.01, n)
+    return pd.DataFrame({"date": dates, "mkt_rf": mkt * scale, "smb": rng.normal(0, 0.005, n),
+                         "hml": rng.normal(0, 0.005, n), "rmw": rng.normal(0, 0.004, n),
+                         "cma": rng.normal(0, 0.004, n), "rf": 0.00008,
+                         "mom": rng.normal(0, 0.006, n)}), mkt
+
+
+def test_ff_market_factor_must_track_spy():
+    ff, mkt = _ff()
+    spy = _bench("SPY", n=len(ff), start="2019-01-01")
+    spy["adj_close_vendor"] = 100 * np.cumprod(1 + mkt + 0.00008
+                                               + np.random.default_rng(3).normal(0, 0.001, len(ff)))
+    assert _sev(Q.check_ff_market_vs_spy(ff, spy), "cross_source_ff") == [INFO]
+    # the same numbers left in percent: correlation still ~1, slope ~0.01 -> caught
+    ff_pct = ff.assign(mkt_rf=ff["mkt_rf"] * 100, rf=ff["rf"] * 100)
+    f = Q.check_ff_market_vs_spy(ff_pct, spy)
+    assert _sev(f, "cross_source_ff") == [ERROR] and "slope" in f[0]["detail"]
+    # an unrelated series: correlation collapses
+    spy["adj_close_vendor"] = 100 * np.cumprod(1 + np.random.default_rng(9).normal(0, 0.01, len(ff)))
+    assert _sev(Q.check_ff_market_vs_spy(ff, spy), "cross_source_ff") == [ERROR]
+
+
+def test_factor_sanity_catches_percent_and_bad_rf():
+    ff, _ = _ff()
+    assert Q.check_factor_sanity(ff) == []
+    pct = ff.assign(mkt_rf=ff["mkt_rf"] * 100)          # -1.2 .. 1.2: still "percent"
+    f = Q.check_factor_sanity(pct)
+    assert any(x["severity"] == ERROR and "mkt_rf" in x["detail"] for x in f)
+    neg_rf = ff.assign(rf=-0.01)
+    assert any("rf outside" in x["detail"] for x in Q.check_factor_sanity(neg_rf))
+    dup = pd.concat([ff, ff.iloc[[0]]])
+    assert any("duplicate dates" in x["detail"] for x in Q.check_factor_sanity(dup))
+
+
 # -------------------------------------------------------------------- gold
 
 def test_half_spread_invariants():
