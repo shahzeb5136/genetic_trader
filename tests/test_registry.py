@@ -34,10 +34,49 @@ from sp500lab.backtest.results import BacktestResult
 @pytest.fixture()
 def reg(tmp_path, monkeypatch):
     """A registry writing into tmp_path, with logging switched on."""
-    monkeypatch.setattr(registry, "EXPERIMENT_LOG", tmp_path / "runs.jsonl")
-    monkeypatch.setattr(registry, "HOLDOUT_LOG", tmp_path / "holdout.jsonl")
+    monkeypatch.setattr(registry.store, "EXPERIMENT_LOG", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(registry.store, "HOLDOUT_LOG", tmp_path / "holdout.jsonl")
     monkeypatch.setenv("SP500LAB_REGISTRY", "on")
     return registry
+
+
+def test_the_isolation_fixture_actually_isolates(reg, tmp_path):
+    """The fixture must redirect the REAL logs, not a copy of their names.
+
+    Every other test in this file trusts `reg` to keep it away from
+    data/experiments/. Both files there are append-only and irreplaceable - a
+    stray trial is noise in someone's n_trials forever, and a stray holdout line
+    says a period was looked at when it was not.
+
+    The failure this guards against is silent. When the registry was split into a
+    package, re-exporting the log paths from `registry/__init__.py` would have made
+    `monkeypatch.setattr(registry, "HOLDOUT_LOG", ...)` patch a copy while
+    `registry.store` went on writing to the real ledger: green tests, polluted data.
+    The paths are deliberately not re-exported, so a patch aimed at the wrong module
+    raises AttributeError - but that only helps if something checks, which is this.
+    """
+    from sp500lab.paths import EXPERIMENT_LOG, HOLDOUT_LOG
+
+    assert not hasattr(registry, "EXPERIMENT_LOG"),         "re-exporting the log paths makes a patch on the package silently useless"
+    assert not hasattr(registry, "HOLDOUT_LOG")
+    assert not hasattr(registry, "CURVE_LOG")
+
+    # what the modules that do the writing will actually open
+    assert registry.store.EXPERIMENT_LOG == tmp_path / "runs.jsonl"
+    assert registry.store.HOLDOUT_LOG == tmp_path / "holdout.jsonl"
+
+    before = {p: (p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else None
+              for p in (EXPERIMENT_LOG, HOLDOUT_LOG)}
+
+    reg.log(make_result(strategy="isolation_probe"), study="isolation-probe")
+    reg.record_holdout_touch(strategy="isolation_probe", study="isolation-probe",
+                             mode="only", start="2022-01-01", end="2022-12-31")
+
+    assert (tmp_path / "runs.jsonl").exists(), "the trial went somewhere else"
+    assert (tmp_path / "holdout.jsonl").exists(), "the ledger line went somewhere else"
+    for path, was in before.items():
+        now = (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None
+        assert now == was, f"the test wrote to the real {path.name}"
 
 
 def make_result(strategy="s", sharpe=1.0, params=None, seed=0, cost_model="realistic",
@@ -183,7 +222,7 @@ def test_study_context_manager_restores_the_previous_study(reg):
 
 def test_log_survives_a_truncated_line(reg):
     reg.log(make_result("good"), study="s")
-    with open(reg.EXPERIMENT_LOG, "a", encoding="utf-8") as fh:
+    with open(reg.store.EXPERIMENT_LOG, "a", encoding="utf-8") as fh:
         fh.write('{"run_id": "truncated"')          # interrupted write
     reg.log(make_result("also-good"), study="s")
     df = reg.load("s")

@@ -453,9 +453,9 @@ def _have_data() -> bool:
 def test_a_real_run_round_trips_into_a_report(tmp_path, monkeypatch):
     """Backtest -> registry -> curve -> report, with nothing stubbed."""
     from sp500lab.backtest import registry, run_backtest
-    monkeypatch.setattr(registry, "EXPERIMENT_LOG", tmp_path / "runs.jsonl")
-    monkeypatch.setattr(registry, "CURVE_LOG", tmp_path / "curves.jsonl")
-    monkeypatch.setattr(registry, "HOLDOUT_LOG", tmp_path / "holdout.jsonl")
+    monkeypatch.setattr(registry.store, "EXPERIMENT_LOG", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(registry.store, "CURVE_LOG", tmp_path / "curves.jsonl")
+    monkeypatch.setattr(registry.store, "HOLDOUT_LOG", tmp_path / "holdout.jsonl")
     monkeypatch.setenv("SP500LAB_REGISTRY", "on")
 
     run_backtest("equal_weight", start="2015-01-01", study="report-test")

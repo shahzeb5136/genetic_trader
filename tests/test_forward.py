@@ -583,9 +583,9 @@ def sandbox(tmp_path, monkeypatch):
     from sp500lab.backtest import registry
     from sp500lab.forward import engine
 
-    monkeypatch.setattr(registry, "EXPERIMENT_LOG", tmp_path / "runs.jsonl")
-    monkeypatch.setattr(registry, "HOLDOUT_LOG", tmp_path / "holdout.jsonl")
-    monkeypatch.setattr(registry, "CURVE_LOG", tmp_path / "curves.jsonl")
+    monkeypatch.setattr(registry.store, "EXPERIMENT_LOG", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(registry.store, "HOLDOUT_LOG", tmp_path / "holdout.jsonl")
+    monkeypatch.setattr(registry.store, "CURVE_LOG", tmp_path / "curves.jsonl")
     monkeypatch.setattr(store_module, "FORWARD_LOG", tmp_path / "forward.jsonl")
     monkeypatch.setattr(store_module, "FORWARD_CURVE_LOG", tmp_path / "fcurves.jsonl")
     monkeypatch.setattr(seal_module, "SEAL_LOG", tmp_path / "seals.jsonl")
