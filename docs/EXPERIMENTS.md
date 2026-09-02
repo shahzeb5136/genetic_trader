@@ -312,8 +312,12 @@ at import. Over-counted trials would silently make every real result look worse.
 - `docs/FORWARD_TEST.md` — how to spend the holdout: pre-registration, the paired
   comparison, and what 54 months can actually prove (**ADR-033**, **ADR-034**)
 - `docs/BACKTEST.md` — the engine these runs come out of
-- `src/sp500lab/backtest/registry.py` — the implementation, documented at length
-- `tests/test_registry.py` — 42 tests, mostly about the two silent failure modes
+- `src/sp500lab/backtest/registry/` — the implementation, documented at length.
+  `store.py` is the append-only log and owns the three log paths; `stats.py` is the
+  monthly statistics; `deflation.py` is ADR-026; `holdout.py` is ADR-025. A test that
+  redirects the logs must patch `registry.store`, not the package — see the module
+  docstring for why that distinction is load-bearing.
+- `tests/test_registry.py` — 43 tests, mostly about the two silent failure modes
 
 ---
 

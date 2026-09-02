@@ -1238,7 +1238,7 @@ returning DataFrames and dataclasses. The forward reports live in
 (ADR-035), and they need nothing beyond those seven calls and nothing from the panel at
 all.
 
-**Three small promotions in `registry.py` to avoid a second copy.** `append_jsonl`,
+**Three small promotions in the registry to avoid a second copy.** `append_jsonl`,
 `read_jsonl`, `to_monthly`, `jsonable` and `panel_fingerprint` were private and are now
 public. The append helper heals a truncated final line before writing (ADR-026), and two
 implementations of a subtle recovery path is how one of them ends up wrong. `to_monthly`
@@ -1467,3 +1467,61 @@ result. Partial weights in a 14-feature blend are not standalone claims, and the
 disagreement between the search and the papers is exactly the kind of thing the next
 years of forward data exist to adjudicate. ADR-032's caveat applies unchanged: fold
 consistency is not generalisation, and both prior GA winners decayed out of sample.
+
+---
+
+## ADR-039 — The report data layer is a module; the registry is a package
+
+**Status:** accepted
+
+**Context.** Two modules had grown past the point where their name described them.
+
+`reporting/cli.py` was 1,381 lines and was not a CLI. Roughly a dozen registry queries —
+`_monthly_entries`, `_evolved_entries`, `_timing_entries`, `_ga_summary`,
+`_study_deflation`, `_forward_lookup`, `_research_row`, `_deflation_from` — lived as
+private helpers of command handlers, so the only way to reach the Algorithm Book's data
+was to have an `argparse.Namespace`. `cmd_all` did exactly that:
+`cmd_algorithms(Namespace(out=..., open_after=False))`, so one page could join the report
+set. A command calling another command through its own argument parser is the shape a
+missing module makes.
+
+`backtest/registry.py` was 860 lines doing five jobs: JSONL plumbing, run logging, curve
+storage, the deflated Sharpe, and the holdout ledger. `deflate` and `trial_sharpe_std`
+are statistics, not storage, and they are what `reporting` and `evolve` import it for.
+
+**Decision.** `reporting/queries.py` reads the registry, the forward store, the feature
+panel and the strategy classes, and returns plain data — no chart specs, no printing, no
+argparse. `algorithm_book()` and `calendar_lab()` gather each cross-cutting page in one
+call, and `cli.py` composes them into a `Report` through `algorithms_page()` and
+`calendar_lab_page()`, which `cmd_all` and the two commands share. This extends the
+ADR-028 seam one step left: gather → spec → render, with a testable boundary at each
+arrow. `build_strategy()` takes explicit keywords rather than a Namespace, so the report
+set, the forward suite and the tests can all call it.
+
+The registry becomes a package: `stats.py` (pure, no I/O), `store.py` (the append-only
+logs), `deflation.py` (ADR-026), `holdout.py` (ADR-025). The public surface is unchanged.
+
+**The one deliberate incompatibility.** The three log paths are *not* re-exported from
+`registry/__init__.py`. `store` owns them and `holdout` reads them through it
+(`store.HOLDOUT_LOG`, never a from-import). Re-exporting would have made
+`monkeypatch.setattr(registry, "HOLDOUT_LOG", tmp_path / ...)` patch a copy while `store`
+went on appending to the real ledger: green tests, polluted data. Both the trial log and
+the holdout ledger are append-only and irreplaceable (ADR-025, ADR-026), and this is the
+failure mode those ADRs exist to prevent. Because the name is absent from the package, a
+patch aimed at the wrong module raises `AttributeError` instead of doing nothing
+quietly. Three fixtures needed updating; one test caught the fourth case on its own.
+`test_the_isolation_fixture_actually_isolates` now pins it, asserting both that the
+paths are absent from the package and that the real logs are byte-identical after a run
+that writes to both.
+
+**Not done, and why.** A rename to disambiguate `Panel` from `FeaturePanel` was
+considered and dropped: the convention is already consistent — `panel` is the price
+matrix everywhere, and a `FeaturePanel` is `fp` or `features`. Two modules named
+`panel.py` is friction when navigating, not a defect worth churning twenty files for.
+
+**Result.** `cli.py` 1,381 → 800 lines; `registry.py` 860 → four modules of 64–557.
+Four `slugify` implementations under three names, two `_gt`/`_lt` pairs and two
+`_finite` copies collapsed into `reporting/util.py` — they had drifted, and
+`views._gt(inf, 0)` disagreed with `forward_views._gt(inf, 0)`. 377 tests pass; the full
+report set, the Algorithm Book and the Calendar Lab rebuild and every index link
+resolves.
