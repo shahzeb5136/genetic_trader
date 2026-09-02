@@ -2,8 +2,12 @@
 
 Four reports, one per question:
 
+    index_report       the landing page: every strategy, one click away
+    strategy_report    one strategy in full, from a live result - the main one
+    feature_report     what every feature is, and whether it reads the future
     comparison_report  which of these is better, and by how much
-    run_report         what did this one strategy actually do
+    run_report         what did this one strategy actually do, from the registry
+    trades_report      show me the orders, and let me take them away
     registry_report    what have I tried, and does the winner survive the search
     honesty_report     what would make me distrust the numbers above
 
@@ -24,14 +28,26 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
 import pandas as pd
 
 from ..backtest import registry
 from . import series as S
 from . import tables as T
 from . import theme
-from .specs import (AreaChart, BarChart, Heatmap, LineChart, Note, Report,
-                    ScatterChart, Section, Stat, StatRow, TableBlock)
+from .specs import (AreaChart, BarChart, Download, Heatmap, LineChart, LinkCard,
+                    LinkGrid, Note, Report, ScatterChart, Section, Stat, StatRow,
+                    TableBlock)
+
+#: Largest trade ledger embedded in a report, in rows AND in bytes of CSV. Whichever
+#: binds first wins. base64 inflates a file by a third, and a 90,000-order equal-weight
+#: ledger would produce a 20 MB page that no browser opens pleasantly.
+#:
+#: Measured: the embedded ledger is 91% of a strategy report's weight (3.65 MB of 4.00 MB
+#: for `low_vol`); every chart on the page together is 0.31 MB. So this constant, and not
+#: the charting, is what decides how large these files are.
+MAX_EMBEDDED_TRADES = 25_000
+MAX_EMBEDDED_BYTES = 4_000_000
 
 #: Kept short because it doubles as a scatter-point label, where a long
 #: name collides with its neighbours. The grey dashed styling already says
@@ -475,3 +491,603 @@ def _lt(x, threshold: float) -> bool:
         return float(x) < threshold
     except (TypeError, ValueError):
         return False
+
+
+# --------------------------------------------------------------------------
+# Trades - the evidence for the curve
+# --------------------------------------------------------------------------
+
+def trades_report(result, *, reconciliation: dict | None = None) -> Report:
+    """Everything an outside reader needs to check a strategy, in one file.
+
+    The download block is the point of this report. Every other view in this module
+    argues that a number is trustworthy; this one hands over the orders and invites the
+    reader to disagree. So the CSV is embedded in the page rather than linked beside it -
+    a report emailed on its own must still carry its evidence.
+
+    The reconciliation table sits above the trade sample deliberately. "Here are the
+    trades" and "here is the proof these are the trades that produced that curve" are
+    different claims, and the second one is the one worth reading first.
+    """
+    from ..backtest.trades import reconcile
+
+    trades = getattr(result, "trades", None)
+    report = Report(
+        title=f"Trades — {result.strategy}",
+        subtitle=(f"{len(trades):,} orders, "
+                  f"{result.config.get('start', '')} to {result.config.get('end', '')}, "
+                  f"{result.config.get('cost_model', '')} costs"
+                  if trades is not None and len(trades) else "no orders"),
+        generated_at=_now(),
+        meta={"strategy": result.strategy,
+              "run": str(result.config.get("run_id", "")),
+              "capital": theme.money(result.config.get("initial_capital", 0)),
+              "commit": str(result.config.get("git_commit", ""))[:10]})
+
+    if trades is None or not len(trades):
+        report.add(Section("Trades", blurb="").add(Note(
+            "This run recorded no orders. Either the strategy never traded, or it was "
+            "run with record_trades=False.", level="warn")))
+        return report
+
+    audit = reconciliation if reconciliation is not None else reconcile(trades, result)
+    p = result.performance
+
+    report.add(Section("Summary", blurb=(
+        "What the strategy did, and what it cost to do it."
+    )).add(StatRow([
+        Stat("CAGR", theme.pct(p.cagr), "after costs"),
+        Stat("Sharpe", theme.num(p.sharpe)),
+        Stat("max drawdown", theme.pct(p.max_drawdown), emphasis="bad"),
+        Stat("orders", theme.count(len(trades))),
+        Stat("traded", theme.money(float(trades["notional"].sum()))),
+        Stat("cost", theme.money(float(trades["cost"].sum())),
+             f"{result.costs.as_dict()['bps_of_traded']:.1f} bp of notional"),
+    ])).add(TableBlock(T.trade_years(trades), title="By year")))
+
+    report.add(Section("Take the orders", blurb=(
+        "The file below is the whole ledger, one row per order. `date` is the execution "
+        "session, `price` is the AS-TRADED open — the price a broker printed that "
+        "morning, not an adjusted number — so every row can be checked against an "
+        "independent quote source. `adj_price` and `adj_shares` are the "
+        "total-return-adjusted figures the accounting actually used; the two views "
+        "differ by the dividend and split chain and reconcile exactly."
+    )).add(_trades_download(result, trades)).add(
+        TableBlock(T.trade_reconciliation(audit), title="Does it add up?")).add(
+        _audit_note(audit)))
+
+    report.add(Section("What it traded", blurb=(
+        "Concentration of activity. A strategy whose costs pile into a handful of names "
+        "is making a bet on those names' liquidity as much as on their returns."
+    )).add(TableBlock(T.trade_leaders(trades), title="Most traded"))
+      .add(TableBlock(T.trade_sample(trades), title="Recent orders")))
+
+    return report
+
+
+def _trades_download(result, trades, full_csv_href: str | None = None) -> Download:
+    """The whole ledger if it fits, a recent slice if it does not - and say which."""
+    slug = _slugify(result.strategy)
+    csv = trades.to_csv(index=False)
+    if len(trades) <= MAX_EMBEDDED_TRADES and len(csv) <= MAX_EMBEDDED_BYTES:
+        return Download(
+            filename=f"{slug}-trades.csv", content=csv,
+            label="Download every buy and sell",
+            note="Plain CSV, embedded in this page. Opens in any spreadsheet; no part "
+                 "of it needs this repository to read.")
+
+    keep = trades.tail(MAX_EMBEDDED_TRADES)
+    sample = keep.to_csv(index=False)
+    while len(sample) > MAX_EMBEDDED_BYTES and len(keep) > 500:
+        keep = keep.tail(len(keep) // 2)
+        sample = keep.to_csv(index=False)
+    where = (f"The complete file is beside this page at {full_csv_href}."
+             if full_csv_href else
+             f"Write the whole file with `sp500lab backtest trades {result.strategy}`.")
+    return Download(
+        filename=f"{slug}-trades-recent.csv", content=sample,
+        label="Download recent trades",
+        note=(f"This ledger has {len(trades):,} orders — too many to embed without "
+              f"making the page unopenable. The most recent {len(keep):,} are here. "
+              + where))
+
+
+def _audit_note(audit: dict) -> Note:
+    if audit.get("ok"):
+        return Note("The orders replay the cash account exactly, and every dollar of "
+                    "cost in the headline is attributed to the order that incurred it. "
+                    "The trade list and the equity curve are the same run.",
+                    level="info", title="Reconciled.")
+    return Note("The orders do NOT add up to the equity curve. One of the two is wrong "
+                "and neither should be quoted until it is resolved.",
+                level="danger", title="Reconciliation failed.")
+
+
+def _slugify(text: str) -> str:
+    out = "".join(c.lower() if c.isalnum() else "-" for c in str(text))
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-") or "strategy"
+
+
+# --------------------------------------------------------------------------
+# 5. One strategy, in full - built from a live result rather than a registry row
+# --------------------------------------------------------------------------
+
+def strategy_report(result, *, results_by_cost=None, benchmark=None, claim: str = "",
+                    feature_coverage=None, deflation: dict | None = None,
+                    index_href: str = "index.html",
+                    full_csv_href: str | None = None) -> Report:
+    """Everything about one strategy, on one page, for a reader who will not open the code.
+
+    `run_report` renders a row from the registry: whatever was logged, plus a stored
+    month-end curve. This renders a live `BacktestResult`, which carries the daily curve,
+    the trade ledger, the weights and the diagnostics - so it can show the drawdown at its
+    true depth, the orders that produced it, and the portfolio it would hold today.
+
+    The order of the sections is the argument the page is making, and it is deliberate:
+    what this claims, then what happened, then what it cost, then the orders, then every
+    reason to distrust the numbers above. A report that puts coverage on page four has
+    already misled its reader.
+    """
+    from ..backtest.trades import reconcile
+
+    cfg = result.config
+    detail = cfg.get("strategy_detail", {})
+    equity = result.equity.dropna()
+    monthly = _to_monthly(equity)
+    bench_curve = result.benchmark.dropna() if result.benchmark is not None else None
+
+    from ..backtest.registry import git_state
+
+    version = cfg.get("feature_version")
+    report = Report(
+        title=result.strategy,
+        subtitle=_headline_claim(claim) or f"{cfg.get('start')} to {cfg.get('end')}",
+        generated_at=_now(),
+        meta={"window": f"{cfg.get('start')} → {cfg.get('end')}",
+              "costs": str(cfg.get("cost_model", "")),
+              "capital": theme.money(cfg.get("initial_capital", 0)),
+              "rebalances": theme.count(cfg.get("n_rebalances")),
+              "feature set": f"v{version}" if version else "none",
+              "commit": git_state()[0][:10]})
+
+    report.add(_claim_section(result, claim, detail, feature_coverage, index_href))
+    report.add(_headline_section(result, benchmark))
+    report.add(_performance_section(result, equity, monthly, bench_curve))
+    report.add(_stability_section(monthly))
+    report.add(_costs_section(result, results_by_cost))
+    report.add(_orders_section(result, reconcile, full_csv_href))
+    report.add(_result_honesty_section(result, deflation))
+    return report
+
+
+def _headline_claim(claim: str) -> str:
+    """A subtitle from the claim: the first sentence, or two if the first is a fragment.
+
+    "Evolved, not written." is a true first sentence and a useless subtitle, which is
+    what happens when a rule about punctuation stands in for a rule about meaning.
+    """
+    if not claim:
+        return ""
+    parts = [p.strip() for p in claim.split(".") if p.strip()]
+    if not parts:
+        return ""
+    out = parts[0]
+    if len(out) < 45 and len(parts) > 1:
+        out += ". " + parts[1]
+    return out[:200].rstrip() + "."
+
+
+def _claim_section(result, claim, detail, feature_coverage, index_href) -> Section:
+    s = Section("What this claims", blurb=(
+        "A strategy is a sentence somebody could argue with. This is the sentence, taken "
+        "from the strategy's own source, so the report and the code cannot drift apart."))
+    if claim:
+        s.add(Note(claim, level="info"))
+    construction = detail.get("construction") or {}
+    s.add(StatRow([
+        Stat("holds", theme.count(construction.get("top_k") or "everything"),
+             "names, by score"),
+        Stat("weighting", str(construction.get("weighting", "—"))),
+        Stat("per-name cap", theme.pct(construction.get("max_weight"))
+             if construction.get("max_weight") else "—"),
+        Stat("warmup", f"{detail.get('warmup', 0)} sessions"),
+        Stat("first tradable", str(detail.get("min_date") or result.config.get("start"))),
+    ], title="How it builds the portfolio"))
+    features = tuple(detail.get("features") or ())
+    s.add(TableBlock(T.strategy_features(features, feature_coverage),
+                     title="What it reads"))
+    s.add(LinkGrid([LinkCard("← all strategies", index_href,
+                             "The scoreboard, the other strategies, and the feature "
+                             "layer they share.")]))
+    return s
+
+
+def _headline_section(result, benchmark) -> Section:
+    p = result.performance
+    s = Section("Headline")
+    s.add(StatRow([
+        Stat("CAGR", theme.pct(p.cagr), "after costs",
+             emphasis="good" if _pos(p.cagr) else "bad"),
+        Stat("Sharpe", theme.num(p.sharpe)),
+        Stat("max drawdown", theme.pct(p.max_drawdown), "daily, peak to trough",
+             emphasis="bad"),
+        Stat("turnover", theme.pct(p.ann_turnover), "one-way, per year",
+             emphasis="warn" if _gt(p.ann_turnover, 4.0) else ""),
+        Stat("names", theme.num(p.avg_positions), "average held"),
+        Stat("cost drag", theme.pct(p.cost_drag), "gross minus net"),
+    ]))
+    if benchmark is not None:
+        s.add(TableBlock(T.versus_benchmark(result, benchmark),
+                         title="Against the index, over exactly these dates"))
+        s.add(Note(
+            "Strategies in this project do NOT all cover the same window — anything "
+            "built on SEC fundamentals starts in 2010 because XBRL does. SPY returned "
+            "10.42%/yr from 2007-04 and 15.66%/yr from 2010-07, so a raw CAGR ranks "
+            "windows rather than strategies. The `difference` column above is the "
+            "comparison worth reading.",
+            level="warn", title="Read the difference, not the level."))
+    return s
+
+
+def _performance_section(result, equity, monthly, bench_curve) -> Section:
+    s = Section("What happened", blurb=(
+        "Growth of a dollar, and the two ways it is usually flattered: a log axis that "
+        "hides a drawdown, and an average that hides which years earned it."))
+    lines = [S.equity(equity, result.strategy)]
+    if result.gross_equity is not None:
+        lines.append(S.equity(result.gross_equity.dropna(), "gross of costs",
+                              kind="gross"))
+    if bench_curve is not None:
+        lines.append(S.equity(bench_curve, BENCHMARK_LABEL, kind="benchmark"))
+    s.add(LineChart(lines, title="Growth of 1.0", y_format="multiple", log_y=True,
+                    height=340,
+                    caption="Log axis: equal vertical distances are equal percentage "
+                            "moves. The dotted line is the same strategy with costs "
+                            "switched off."))
+    if bench_curve is not None:
+        rel = S.relative(equity, bench_curve, f"vs {BENCHMARK_LABEL}")
+        if len(rel):
+            s.add(LineChart([rel], title=f"Cumulative ratio to {BENCHMARK_LABEL}",
+                            y_format="multiple", height=230, legend=False,
+                            caption="Rising means outperforming. Two near-identical "
+                                    "equity curves are visually indistinguishable over "
+                                    "fifteen years; their ratio is not."))
+    s.add(AreaChart(S.drawdown(equity), title="Drawdown", height=190,
+                    caption="Computed on the DAILY curve, so this is the real depth "
+                            "rather than the shallower month-end shape."))
+    years, values = S.annual_returns(equity)
+    if years:
+        s.add(BarChart(years, values, title="Calendar year returns", y_format="pct",
+                       height=240))
+    try:
+        s.add(TableBlock(T.annual_returns(result.annual_table()),
+                         title="Year by year against the index"))
+    except Exception:                                             # noqa: BLE001
+        pass
+    return s
+
+
+def _stability_section(monthly) -> Section:
+    s = Section("Was it steady?", blurb=(
+        "A single Sharpe over fifteen years hides whether it was earned evenly or in one "
+        "stretch. Every window below is trailing, so each point was knowable on its own "
+        "date."))
+    if monthly is None or len(monthly) < 40:
+        s.add(Note("Too few months to compute trailing statistics.", "warn"))
+        return s
+    rs = S.rolling_sharpe(monthly, window=36)
+    if len(rs):
+        s.add(LineChart([rs], title="Rolling 3-year Sharpe", y_format="num",
+                        zero_line=True, height=240, legend=False,
+                        caption="Below zero means three years of losing money. Most "
+                                "strategies here spend time there."))
+    rv = S.rolling_vol(monthly, window=12)
+    if len(rv):
+        s.add(LineChart([rv], title="Rolling 1-year volatility", y_format="pct",
+                        height=210, legend=False))
+    rows, cols, grid = S.monthly_grid(monthly)
+    if rows:
+        s.add(Heatmap(rows, cols, grid, title="Monthly returns",
+                      caption="Across a row is how a year was earned; down a column is "
+                              "the only honest way to look for seasonality."))
+    return s
+
+
+def _costs_section(result, results_by_cost) -> Section:
+    s = Section("What it cost", blurb=(
+        "Turnover is where backtests lie, so this sits next to the return rather than "
+        "beneath it. All three cost settings, always — a strategy that only works under "
+        "the optimistic one is a bet that the spread estimator is wrong in your favour."))
+    if results_by_cost:
+        s.add(TableBlock(T.cost_sensitivity(results_by_cost),
+                         title="Under all three cost models"))
+        cagrs = [r.performance.cagr for r in results_by_cost]
+        if cagrs and cagrs[0] > 0 >= cagrs[-1]:
+            s.add(Note("This strategy is profitable only under optimistic costs. That is "
+                       "a bet on the half-spread estimator, not a strategy.",
+                       level="danger", title="It does not survive being charged."))
+    c = result.costs.as_dict()
+    s.add(StatRow([
+        Stat("total charged", theme.money(c["total"]),
+             f"{c['bps_of_traded']:.1f} bp of notional"),
+        Stat("commission", theme.money(c["commission"]),
+             f"{c['n_min_commission']:,} at the $1 minimum"),
+        Stat("spread", theme.money(c["spread"])),
+        Stat("orders", theme.count(c["n_orders"])),
+        Stat("traded", theme.money(c["traded_notional"])),
+    ]))
+    if c.get("n_spread_fallback"):
+        s.add(Note(f"{c['n_spread_fallback']:,} orders had no spread estimate and used "
+                   "the fallback. Their cost is an assumption, not a measurement.",
+                   level="warn"))
+    return s
+
+
+def _orders_section(result, reconcile, full_csv_href=None) -> Section:
+    trades = getattr(result, "trades", None)
+    s = Section("The orders", blurb=(
+        "The evidence for everything above. `price` is the AS-TRADED open — the price a "
+        "broker printed that morning — so any row can be checked against an independent "
+        "quote source."))
+    if trades is None or not len(trades):
+        s.add(Note("This run recorded no orders.", "warn"))
+        return s
+    audit = reconcile(trades, result)
+    s.add(_trades_download(result, trades, full_csv_href))
+    s.add(TableBlock(T.trade_reconciliation(audit), title="Does it add up?"))
+    s.add(_audit_note(audit))
+    s.add(TableBlock(T.trade_years(trades), title="Trading by year"))
+    s.add(TableBlock(T.trade_leaders(trades, 15), title="Most traded"))
+    s.add(TableBlock(T.holdings_snapshot(result), title="What it would hold today"))
+    return s
+
+
+def _result_honesty_section(result, deflation) -> Section:
+    s = Section("What would make me distrust this", blurb=(
+        "Every backtest in this project reports the ways it could be lying. These are "
+        "measurements, not disclaimers."))
+    diag = result.diagnostics
+    rows = [[T._text(k.replace("!! ", "")), T._text(str(v),
+             "bad" if k.startswith("!!") else "")]
+            for k, v in diag.items()]
+    s.add(TableBlock(T.Table(["diagnostic", "value"], rows,
+                             aligns=["left", "left"], sortable=False),
+                     title="Reported by the engine on every run"))
+    coverage = str(diag.get("price_coverage", ""))
+    if coverage:
+        s.add(Note(
+            f"Price coverage: {coverage}. The index members with no price history are "
+            "disproportionately the ones that were delisted, so an early-year result is "
+            "computed over a survivor subset sitting underneath the point-in-time "
+            "universe this project exists to build (ADR-023).",
+            level="warn", title="Coverage is a result, not a footnote."))
+    if deflation and deflation.get("deflated_sharpe") is not None:
+        dsr = deflation["deflated_sharpe"]
+        s.add(TableBlock(T.deflation_panel(deflation),
+                         title="Does it survive the search that produced it?"))
+        s.add(Note(
+            f"{deflation.get('n_trials')} distinct configurations were evaluated in this "
+            f"study. The luckiest of that many worthless strategies would have posted an "
+            f"annualised Sharpe of about "
+            f"{deflation.get('expected_max_sharpe_annualised')}.",
+            level="info" if (isinstance(dsr, float) and dsr >= 0.95) else "danger"))
+    if result.config.get("touched_holdout"):
+        s.add(Note("This run saw HOLDOUT data (2022 onward) and is permanently recorded "
+                   "in the holdout ledger. Each look degrades the only out-of-sample "
+                   "evidence this project has.", level="danger", title="Holdout touched."))
+    return s
+
+
+def _to_monthly(curve):
+    s = curve.dropna().astype(float)
+    if len(s) < 2:
+        return None
+    idx = pd.DatetimeIndex(pd.to_datetime(pd.Series(list(s.index))))
+    m = pd.Series(s.to_numpy(), index=idx).resample("ME").last().dropna()
+    m.index = m.index.strftime("%Y-%m-%d")
+    return m
+
+
+# --------------------------------------------------------------------------
+# 6. The feature layer
+# --------------------------------------------------------------------------
+
+def feature_report(fp, *, leakage: dict | None = None, usage=None,
+                   index_href: str = "index.html") -> Report:
+    """What every feature is, where it comes from, and whether it can be trusted.
+
+    The leakage check goes SECOND, immediately after the overview and before a single
+    feature is listed. A catalogue of 75 columns is a directory listing until somebody
+    has established that none of them read the future; putting the check at the bottom
+    would be organising the page by how comfortable it is to read.
+    """
+    from ..features.catalog import FAMILY_NOTES, by_family
+
+    coverage = fp.coverage()
+    report = Report(
+        title="The feature layer",
+        subtitle=f"{fp.n_features} point-in-time features, "
+                 f"{fp.meta.get('start')} to {fp.meta.get('end')}",
+        generated_at=_now(),
+        meta={"features": theme.count(fp.n_features),
+              "rebalance dates": theme.count(len(fp.rows)),
+              "securities": theme.count(len(fp.security_ids)),
+              "version": str(fp.meta.get("feature_version"))})
+
+    overview = Section("What this is", blurb=(
+        "Every strategy in this project reads the same numbers. If each computed its own "
+        "momentum and its own valuation ratio, the scoreboard would partly rank who "
+        "wrote better feature code rather than who has better signal — and a genetic "
+        "algorithm evaluating a thousand individuals cannot afford to recompute a "
+        "rolling regression inside every one of them."))
+    overview.add(StatRow([
+        Stat("features", theme.count(fp.n_features)),
+        Stat("families", theme.count(len(by_family()))),
+        Stat("rebalance dates", theme.count(len(fp.rows))),
+        Stat("securities", theme.count(len(fp.security_ids))),
+        Stat("first date", str(fp.meta.get("start"))),
+        Stat("version", str(fp.meta.get("feature_version")), "bump changes results"),
+    ]))
+    overview.add(TableBlock(T.feature_families(fp.names, coverage), title="By family"))
+    overview.add(LinkGrid([LinkCard("← all reports", index_href,
+                                    "The strategies that read these, and how each one "
+                                    "scored.")]))
+    report.add(overview)
+
+    check = Section("Can any of it be trusted?", blurb=(
+        "Features fail in two ways, and this catches both at once. A price feature can "
+        "have a forward-looking window; a fundamental can be joined on the date a number "
+        "became TRUE rather than the date it became KNOWN. So the whole matrix is rebuilt "
+        "from a price panel that physically ends at a past date, with every filing "
+        "published after it deleted, and the earlier rows must come out bit-identical."))
+    check.add(TableBlock(T.leakage_summary(leakage or {})))
+    if leakage and leakage.get("ok"):
+        check.add(Note(
+            "Deleting the future changed nothing about the past, for every feature. "
+            "That is not proof the features are useful — only that they are honest.",
+            level="info", title="Passed."))
+    elif leakage:
+        check.add(Note("At least one feature changed when later data was removed. It was "
+                       "reading data it could not have had, and every backtest that used "
+                       "it is void.", level="danger", title="FAILED."))
+    report.add(check)
+
+    cov = Section("How much of it actually exists", blurb=(
+        "A feature that is 40% populated in 2010 and 95% populated in 2020 will make any "
+        "strategy using it look like it improved over time when only the data did. "
+        "Fundamentals begin in 2010 because the SEC's XBRL mandate does, and they cover "
+        "649 of the 973 companies that have ever been in the index — which correlates "
+        "with survival."))
+    lines = _family_coverage_lines(fp)
+    if lines:
+        cov.add(LineChart(lines, title="Share of securities with a value, by family",
+                          y_format="pct", height=300,
+                          caption="Around 80% is the ceiling: the denominator counts "
+                                  "every security in the panel, including ones that were "
+                                  "not in the index on that date."))
+    report.add(cov)
+
+    for family, names in by_family().items():
+        present = [n for n in names if fp.has(n)]
+        if not present:
+            continue
+        sec = Section(family, blurb=FAMILY_NOTES.get(family, ""))
+        sec.add(TableBlock(T.feature_catalog(present, coverage, family=family)))
+        report.add(sec)
+
+    if usage is not None and len(usage):
+        who = Section("Who reads what", blurb=(
+            "A strategy is only as available as its scarcest input."))
+        who.add(TableBlock(usage))
+        report.add(who)
+
+    report.add(Section("Adding one", blurb=(
+        "Four steps, in `docs/FEATURES.md`: write it in the family module with a trailing "
+        "window, add a line to `features/catalog.py` so it appears here, bump "
+        "`FEATURE_VERSION`, and run the leakage check. The test suite fails if a feature "
+        "exists without a catalogue entry, which is the only way a page like this stays "
+        "true.")).add(Note(
+            "python -m sp500lab features build --rebuild && "
+            "python -m sp500lab features check", level="info")))
+    return report
+
+
+def _family_coverage_lines(fp) -> list:
+    """One line per family: the share of securities with a value, over time."""
+    from ..features.catalog import describe
+
+    groups: dict[str, list[int]] = {}
+    for i, name in enumerate(fp.names):
+        groups.setdefault(describe(name).family, []).append(i)
+
+    finite = np.isfinite(fp.values)
+    dates = [str(d) for d in fp.dates]
+    out = []
+    for family, cols in groups.items():
+        if family in ("Macro", "Market state"):
+            continue           # broadcast across every security; the line is a constant
+        share = finite[:, :, cols].mean(axis=(1, 2))
+        out.append(S.LineSeries(family, dates, [float(v) for v in share]))
+    return out
+
+
+# --------------------------------------------------------------------------
+# 7. The index: one page that links to everything else
+# --------------------------------------------------------------------------
+
+def index_report(specs: list, *, curves=None, studies=None, extra_cards=None,
+                 title: str = "sp500lab", subtitle: str = "") -> Report:
+    """The landing page. Every other report is one click from here.
+
+    Reports in this project are separate self-contained files, because that is what makes
+    any one of them survive being sent on its own. The cost is that there is no
+    navigation, and this is the fix — relative links between files in one folder, no
+    server and no build step.
+    """
+    report = Report(title=title, subtitle=subtitle or
+                    "Every strategy, what it claims, and what it actually did.",
+                    generated_at=_now(),
+                    meta={"strategies": theme.count(len(specs))})
+
+    beat = [s for s in specs if _gt(s.get("d_sharpe"), 0)]
+    searched = [s for s in specs if s.get("evolved")]
+    report.add(Section("Start here", blurb=(
+        "Each card opens a full report: the claim, the equity curve, every year, what it "
+        "cost, and the complete list of orders as a downloadable CSV."
+    )).add(LinkGrid([LinkCard(**c) for c in (extra_cards or [])]))
+      .add(Note(
+        f"{len(beat)} of {len(specs)} strategies beat the index on risk-adjusted return "
+        "over their own window"
+        + (": " + ", ".join(s["name"] for s in beat) + "." if beat else ".")
+        + " That is the correct null result and it is the bar. Anything that beats it by "
+          "a wide margin on a first run is much more likely to be a bug than an edge.",
+        level="info", title="The honest summary.")))
+
+    if searched:
+        report.section("Start here").add(Note(
+            ", ".join(s["name"] for s in searched)
+            + " came out of a genetic algorithm. A searched strategy's Sharpe is the "
+              "MAXIMUM over every configuration the search evaluated, and the maximum of "
+              "N draws is high whether or not there is any signal in the data. The "
+              "`deflated` column corrects for that and is the number to read first. "
+              "Neither has been tested on the reserved 2022 holdout, which is the only "
+              "out-of-sample evidence this project has and is worth exactly one look.",
+            level="warn",
+            title=f"{len(searched)} of these were not written by a person."))
+
+    report.add(Section("The scoreboard", blurb=(
+        "Sorted by Sharpe against the index over each strategy's OWN dates. Windows "
+        "differ by design — anything using SEC fundamentals starts in 2010 — and SPY "
+        "returned 10.42%/yr from 2007-04 against 15.66%/yr from 2010-07, so a raw CAGR "
+        "column ranks windows rather than strategies."
+    )).add(TableBlock(T.strategy_roster(specs))))
+
+    report.add(Section("All of them", blurb="One card per strategy."
+                       ).add(LinkGrid([
+        LinkCard(title=s["name"], href=s.get("href", ""), blurb=s.get("claim", ""),
+                 stats=[("CAGR", theme.pct(s.get("cagr"))),
+                        ("Sharpe", theme.num(s.get("sharpe"))),
+                        ("vs index", f"{s['d_sharpe']:+.2f}"
+                         if s.get("d_sharpe") is not None else "—")],
+                 emphasis="good" if _gt(s.get("d_sharpe"), 0) else "")
+        for s in specs])))
+
+    if curves:
+        report.add(Section("Every curve at once", blurb=(
+            "Rebased to 1.0 at each strategy's own start, which is why the lines do not "
+            "all begin together. Useful for shape, misleading for ranking — use the "
+            "scoreboard for that."
+        )).add(LineChart([S.equity(c, n) for n, c in curves.items() if len(c) > 2],
+                         title="Growth of 1.0", y_format="multiple", log_y=True,
+                         height=380)))
+
+    if studies is not None and len(studies):
+        report.add(Section("Searches", blurb=(
+            "Every genetic-algorithm run is a study, and every individual it evaluated is "
+            "logged as a trial. `trials` is the input to the deflated Sharpe: without it, "
+            "the winner's Sharpe is not conservative or optimistic, it is meaningless."
+        )).add(TableBlock(T.studies(studies))))
+
+    return report

@@ -153,6 +153,16 @@ METRIC_DIRECTION: dict[str, int] = {
     "strategy": 0, "study": 0, "costs": 0, "cost_model": 0, "date": 0, "run_id": 0,
     "names": 0, "avg_positions": 0, "n_rebalances": 0, "n_trials": 0, "beta": 0,
     "n_orders": 0, "traded_notional": 0, "seed": 0, "n_months": 0,
+    # forward testing (ADR-033): a decay is a change, and less decay is better. `decay_z`
+    # is that change in standard errors, so it runs the same way. `fresh_months` and
+    # `look_number` are facts about the evidence, not qualities of the strategy.
+    "decay_sharpe": 1, "decay_sharpe_monthly": 1, "decay_cagr": 1, "decay_d_sharpe": 1,
+    "decay_z": 1, "psr_vs_research": 1, "psr_vs_benchmark": 1,
+    "forward_sharpe": 1, "forward_cagr": 1, "forward_d_sharpe": 1,
+    "research_sharpe": 1, "research_cagr": 1, "research_d_sharpe": 1,
+    "forward_max_drawdown": 1, "seal_drift_sharpe": 0,
+    "fresh_months": 0, "look_number": 0, "verdict": 0, "seal_mode": 0,
+    "holdout_looks_total": -1,
 }
 
 

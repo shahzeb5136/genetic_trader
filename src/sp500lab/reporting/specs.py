@@ -115,6 +115,53 @@ class TableBlock:
 
 
 @dataclass
+class LinkCard:
+    """One entry in a LinkGrid: a title, a line of prose, and a few figures."""
+
+    title: str
+    href: str
+    blurb: str = ""
+    stats: list[tuple[str, str]] = field(default_factory=list)
+    emphasis: str = ""           # "" | "good" | "bad" | "warn"
+
+
+@dataclass
+class LinkGrid:
+    """A set of cards linking to sibling reports.
+
+    Reports in this project are separate self-contained files, which is what makes any
+    one of them survive being emailed on its own. The cost of that is no navigation, and
+    an index page is the cheap fix: relative hrefs between files in the same directory,
+    no server, no build step.
+    """
+
+    cards: list[LinkCard]
+    title: str = ""
+    caption: str = ""
+
+
+@dataclass
+class Download:
+    """A file the reader can save, carried inside the page itself.
+
+    The report is one self-contained HTML file with no server behind it, so a link to a
+    CSV sitting next to it breaks the moment somebody emails the report on its own. The
+    payload is embedded as a data URI instead, which keeps "self-contained" true for the
+    thing a reader most wants to take away: the list of trades.
+
+    Only for files small enough to inline. A base64 data URI is 4/3 the size of the file
+    and lives in memory while the page is open; `views.py` caps what it will embed and
+    says so in the caption when it truncates.
+    """
+
+    filename: str
+    content: str
+    label: str = "Download"
+    note: str = ""
+    mime: str = "text/csv"
+
+
+@dataclass
 class Note:
     """Prose. Use it where a number needs a caveat that a caption cannot carry."""
 
@@ -124,7 +171,7 @@ class Note:
 
 
 Block = Union[LineChart, AreaChart, BarChart, ScatterChart, Heatmap,
-              StatRow, TableBlock, Note]
+              StatRow, TableBlock, Note, Download, LinkGrid]
 
 
 @dataclass

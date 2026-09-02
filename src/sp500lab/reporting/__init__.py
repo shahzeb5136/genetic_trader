@@ -15,6 +15,10 @@ Layout, in dependency order
     tables.py   registry rows -> formatted tables. Pure.
     specs.py    what to draw, never how. The seam between preparation and rendering.
     views.py    composes registry data into a Report of Sections and Blocks. Pure.
+    forward_views.py
+                the same, for the forward-test store. A sibling rather than more of
+                views.py: a forward report asks whether an out-of-sample result matched
+                a prediction, which needs different tables and a different voice.
     render/     Report -> SVG and HTML. The only files that compute pixels or emit tags.
     cli.py      `sp500lab report ...`
 
@@ -31,10 +35,16 @@ from __future__ import annotations
 from .render.html import render as render_html
 from .render.html import write as write_html
 from .specs import Report, Section
-from .views import comparison_report, honesty_report, registry_report, run_report
+from .forward_views import (forward_decay_report, forward_honesty_report,
+                            forward_index_report, forward_strategy_report)
+from .views import (comparison_report, feature_report, honesty_report, index_report,
+                    registry_report, run_report, strategy_report, trades_report)
 
 __all__ = [
     "Report", "Section",
     "comparison_report", "run_report", "registry_report", "honesty_report",
+    "trades_report", "strategy_report", "feature_report", "index_report",
+    "forward_index_report", "forward_strategy_report", "forward_decay_report",
+    "forward_honesty_report",
     "render_html", "write_html",
 ]

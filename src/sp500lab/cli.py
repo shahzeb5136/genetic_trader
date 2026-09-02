@@ -205,6 +205,12 @@ research discipline (docs/EXPERIMENTS.md):
   python -m sp500lab experiments deflate NAME   # does the winner survive the search?
   python -m sp500lab experiments holdout        # every look at the reserved period
 
+forward testing, after the research window (docs/FORWARD_TEST.md):
+  python -m sp500lab forward window             # what out-of-sample data exists
+  python -m sp500lab forward seal NAME --rationale "..."   # pre-register, spend nothing
+  python -m sp500lab forward run NAME           # THIS SPENDS THE HOLDOUT
+  python -m sp500lab forward scoreboard         # prediction against outcome
+
 visualise it (docs/REPORTS.md):
   python -m sp500lab report study baselines --open
   python -m sp500lab report registry
@@ -241,10 +247,18 @@ visualise it (docs/REPORTS.md):
                    ).set_defaults(func=cmd_status)
 
     from .backtest.cli import add_experiments_parser, add_parser as add_backtest_parser
+    from .evolve.cli import add_parser as add_evolve_parser
+    from .features.cli import add_parser as add_features_parser
+    from .forward.cli import add_parser as add_forward_parser
     from .reporting.cli import add_parser as add_report_parser
+    from .timing.cli import add_parser as add_timing_parser
+    add_features_parser(sub)
     add_backtest_parser(sub)
+    add_evolve_parser(sub)
     add_experiments_parser(sub)
+    add_forward_parser(sub)
     add_report_parser(sub)
+    add_timing_parser(sub)
 
     s = sub.add_parser("query", help="run SQL against the parquet lake")
     s.add_argument("sql", nargs="?", help="SQL to execute")

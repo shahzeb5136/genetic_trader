@@ -17,13 +17,14 @@ which is why `charts.py` never writes a hex value.
 
 from __future__ import annotations
 
+import base64 as _b64
 import html as _html
 import time
 
 from ...paths import PROJECT_ROOT
 from .. import theme
-from ..specs import (AreaChart, BarChart, Heatmap, LineChart, Note, Report,
-                     ScatterChart, Section, StatRow, TableBlock)
+from ..specs import (AreaChart, BarChart, Download, Heatmap, LineChart, LinkGrid,
+                     Note, Report, ScatterChart, Section, StatRow, TableBlock)
 from ..tables import Table
 from . import charts
 
@@ -99,6 +100,10 @@ def _block(block) -> str:
         return _note(block)
     if isinstance(block, StatRow):
         return _stat_row(block)
+    if isinstance(block, Download):
+        return _download(block)
+    if isinstance(block, LinkGrid):
+        return _link_grid(block)
     if isinstance(block, TableBlock):
         return _table_block(block)
     if isinstance(block, (LineChart, AreaChart, BarChart, ScatterChart, Heatmap)):
@@ -157,14 +162,50 @@ def _table(table: Table) -> str:
             align = table.aligns[i] if i < len(table.aligns) else "right"
             title = f' title="{_esc(cell.title)}"' if cell.title else ""
             key = _esc(str(cell.sort_key))
+            body_text = (f'<a href="{_esc(cell.href)}">{_esc(cell.text)}</a>'
+                         if cell.href else _esc(cell.text))
             cells.append(f'<td class="{align} {_esc(cell.emphasis)}" '
-                         f'data-key="{key}"{title}>{_esc(cell.text)}</td>')
+                         f'data-key="{key}"{title}>{body_text}</td>')
         body.append(f"<tr>{''.join(cells)}</tr>")
 
     cap = f'<p class="caption">{_esc(table.caption)}</p>' if table.caption else ""
     return (f'<div class="table-wrap"><table class="data{sortable}">'
             f'<thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody>'
             f'</table></div>{cap}')
+
+
+def _link_grid(block: LinkGrid) -> str:
+    """Cards linking to sibling reports. Relative hrefs, so the set travels as a folder."""
+    cards = []
+    for c in block.cards:
+        stats = "".join(
+            f'<span class="card-stat"><span class="k">{_esc(k)}</span>'
+            f'<span class="v">{_esc(v)}</span></span>'
+            for k, v in c.stats)
+        blurb = f'<p class="card-blurb">{_esc(c.blurb)}</p>' if c.blurb else ""
+        cards.append(
+            f'<a class="card {_esc(c.emphasis)}" href="{_esc(c.href)}">'
+            f'<span class="card-title">{_esc(c.title)}</span>{blurb}'
+            f'<span class="card-stats">{stats}</span></a>')
+    head = f'<h3>{_esc(block.title)}</h3>' if block.title else ""
+    cap = f'<p class="caption">{_esc(block.caption)}</p>' if block.caption else ""
+    return f'<div class="block">{head}<div class="cards">{"".join(cards)}</div>{cap}</div>'
+
+
+def _download(block: Download) -> str:
+    """An <a download> whose href is the file itself. No network, no server.
+
+    base64 rather than a percent-encoded plain-text URI: a CSV is full of commas,
+    newlines and the occasional quote, and every one of them would need escaping to
+    survive an attribute. Encoding once is cheaper than escaping correctly.
+    """
+    payload = _b64.b64encode(block.content.encode("utf-8")).decode("ascii")
+    size = len(block.content) / 1024
+    note = f'<span class="dl-note">{_esc(block.note)}</span>' if block.note else ""
+    return (f'<div class="download"><a class="dl" download="{_esc(block.filename)}" '
+            f'href="data:{_esc(block.mime)};base64,{payload}">{_esc(block.label)}</a>'
+            f'<span class="dl-meta">{_esc(block.filename)} &middot; '
+            f'{size:,.0f} KB</span>{note}</div>')
 
 
 def _note(note: Note) -> str:
@@ -328,6 +369,35 @@ td.muted {{ color: var(--muted); }}
          font-size: 13.5px; max-width: 88ch; }}
 .note.warn {{ border-left-color: var(--warn); }}
 .note.danger {{ border-left-color: var(--neg); }}
+
+.download {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px;
+  margin: 14px 0; padding: 14px 16px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; }}
+a.dl {{ display: inline-block; padding: 7px 14px; border-radius: 5px;
+  background: var(--accent); color: #fff; text-decoration: none;
+  font-size: 13.5px; font-weight: 600; }}
+a.dl:hover {{ filter: brightness(1.08); }}
+.dl-meta {{ font-family: var(--mono); font-size: 12px; color: var(--ink-soft); }}
+.dl-note {{ font-size: 12.5px; color: var(--ink-soft); flex-basis: 100%; }}
+
+.cards {{ display: grid; gap: 10px; margin: 12px 0;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); }}
+a.card {{ display: block; padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: var(--ink);
+  text-decoration: none; border-left-width: 3px; }}
+a.card:hover {{ border-color: var(--accent); border-left-color: var(--accent); }}
+a.card.good {{ border-left-color: var(--pos); }}
+a.card.bad {{ border-left-color: var(--neg); }}
+a.card.warn {{ border-left-color: var(--warn); }}
+.card-title {{ display: block; font-weight: 650; font-size: 14.5px;
+  font-family: var(--mono); }}
+.card-blurb {{ margin: 5px 0 9px; font-size: 12.5px; color: var(--ink-soft);
+  line-height: 1.45; }}
+.card-stats {{ display: flex; flex-wrap: wrap; gap: 4px 14px; }}
+.card-stat .k {{ color: var(--ink-soft); font-size: 11px; margin-right: 5px; }}
+.card-stat .v {{ font-family: var(--mono); font-size: 12.5px; }}
+table.data td a {{ color: var(--accent); text-decoration: none; }}
+table.data td a:hover {{ text-decoration: underline; }}
 
 .page-footer {{ padding: 26px 0 0; color: var(--ink-soft); font-size: 12.5px;
                 border-top: 1px solid var(--line); margin-top: 34px; }}
