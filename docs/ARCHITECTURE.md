@@ -15,6 +15,11 @@
 
 Three layers, each rebuildable from the one below it. Only bronze is irreplaceable.
 
+That sketch covers the data layer. For the whole project on one page — sources, ingestion,
+the feature layer, the algorithms, the engine, the genetic algorithm, the forward test and
+every generated report, with the folder each lives in — see
+[PROJECT_MAP.md](PROJECT_MAP.md).
+
 ---
 
 ## Why bronze is sacred

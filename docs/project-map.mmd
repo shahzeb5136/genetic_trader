@@ -1,0 +1,120 @@
+flowchart TB
+
+%% ============================ 1 · SOURCES ============================
+subgraph SRC[" 1 · EXTERNAL SOURCES — free tier, fetched once, cached forever "]
+  direction LR
+  WIKI["Wikipedia<br/>index members and<br/>every change since 1996"]
+  SEC["SEC EDGAR<br/>ticker map and<br/>XBRL company facts"]
+  YF["Yahoo Finance<br/>daily OHLCV, splits,<br/>dividends, 29 benchmarks"]
+  FRED["FRED<br/>macro series,<br/>unrevised vintages only"]
+  KF["Ken French<br/>Fama-French<br/>factor returns"]
+end
+
+INGEST["src/sp500lab/ingest/<br/>wikipedia_sp500 · wikipedia_history · sec_tickers<br/>prices_yfinance · sec_companyfacts<br/>benchmarks · fred · fama_french<br/>― http_cache.py fetches once and rate-limits ―"]
+
+BRONZE[("data/bronze/  ·  the only irreplaceable layer<br/>raw vendor bytes, append-only, partitioned by ingest_date<br/>sha256 of every artifact in data/_manifest/")]
+
+NORMALIZE["src/sp500lab/normalize/<br/>adjustments.py · splits.py<br/>our own split and dividend factors, never the vendor's"]
+
+SILVER[("data/silver/  ·  normalized parquet, queried through DuckDB<br/>daily_bars · daily_bars_adjusted · adjustment_factors · corporate_actions<br/>sp500_membership · security_master · xbrl_facts · fred_series · fama_french")]
+
+FEATURES["src/sp500lab/features/<br/>panel · price · fundamental · macro · events<br/>catalog.py documents all 79 as data, not prose<br/>ranked.py precomputes percentile ranks for the search"]
+
+GOLD[("data/gold/  ·  analysis-ready, rebuildable<br/>feature panel · half_spread · delisting_returns · panel cache")]
+
+CHECKS["Is any of it trustworthy?<br/>quality/checks.py — every table, the adjustment chain, cross-source<br/>backtest/accept.py — 7 identities incl. SPY replication and no-lookahead<br/>doctor.py — runs the lot behind one exit code"]
+
+%% ========================== 2 · ALGORITHMS ===========================
+subgraph ALG[" 2 · THE ALGORITHMS — src/sp500lab/strategies/ and timing/ "]
+  direction LR
+  A_BASE["baselines.py<br/>the null hypotheses:<br/>equal weight, momentum,<br/>low vol, random, cash"]
+  A_WRIT["alpha.py · frontier.py<br/>17 written hypotheses,<br/>one economic claim each"]
+  A_LEARN["learned.py<br/>rolling ridge, shallow MLP<br/>refit at every rebalance"]
+  A_EVO["evolvable.py · genome.py<br/>the search substrate:<br/>a strategy IS a float vector"]
+  A_MINE["custom.py<br/>yours"]
+  A_TIME["timing/<br/>a second, daily leg engine:<br/>overnight vs intraday,<br/>9 calendar rules"]
+end
+
+ENGINE["src/sp500lab/backtest/  ·  the one scorer everything shares<br/>engine.py — signal on a close, fill at the next open<br/>portfolio · costs · spreads · delisting · trades · metrics<br/>survivorship-free universe, three cost settings, always all three"]
+
+GA["src/sp500lab/evolve/  ·  the genetic algorithm<br/>engine.py — population, elites, crossover, mutation<br/>fitness.py — fold consistency, not full-sample Sharpe<br/>operators.py — no finance in here at all"]
+
+%% ========================== 3 · THE RECORD ===========================
+subgraph REC[" 3 · THE PERMANENT RECORD — append-only, never rewritten "]
+  direction LR
+  R_RUNS[("data/experiments/<br/>runs.jsonl · curves.jsonl<br/>every backtest ever run")]
+  R_HOLD[("holdout_log.jsonl<br/>every look at the reserved<br/>period. Undeletable.")]
+  R_EVO[("data/experiments/evolve/<br/>every generation of<br/>every search")]
+  R_FWD[("data/experiments/forward/<br/>seals · forward_runs · curves")]
+end
+
+FORWARD["src/sp500lab/forward/  ·  the out-of-sample test, 2022 onward<br/>seal.py — pre-register the prediction BEFORE the look<br/>engine.py · windows.py · compare.py — paired legs, 9 checks, a verdict<br/>store.py — the read API the reports are built on"]
+
+RESULTS[("results/<br/>forward/ one folder per test · trades/ one per strategy")]
+
+REPORTING["src/sp500lab/reporting/<br/>queries.py go and find out → views · forward_views · genetic_views<br/>algorithms_view · timing_views  (pure - these emit no markup)<br/>→ render/charts.py · html.py · markdown.py"]
+
+%% =========================== 4 · OUTPUT =============================
+subgraph OUT[" 4 · WHAT YOU ACTUALLY OPEN — reports/ "]
+  direction LR
+  O_BT["reports/backtest/<br/>index + one page<br/>per algorithm"]
+  O_FW["reports/forward/<br/>index + one page<br/>per algorithm"]
+  O_GA["reports/genetic_algorithm/<br/>methodology · features<br/>evolved-algorithms"]
+  O_EX["reports/extra/<br/>feature layer, registry, honesty,<br/>Algorithm Book, Calendar Lab"]
+end
+
+%% ============================== EDGES ===============================
+WIKI ==> INGEST
+SEC ==> INGEST
+YF ==> INGEST
+FRED ==> INGEST
+KF ==> INGEST
+
+INGEST ==> BRONZE
+BRONZE ==> NORMALIZE
+NORMALIZE ==> SILVER
+SILVER ==> FEATURES
+FEATURES ==> GOLD
+SILVER -.-> CHECKS
+GOLD -.-> CHECKS
+
+GOLD ==> ENGINE
+A_BASE --> ENGINE
+A_WRIT --> ENGINE
+A_LEARN --> ENGINE
+A_EVO --> ENGINE
+A_MINE --> ENGINE
+A_TIME -.->|"its own leg engine,<br/>same costs and ledgers"| R_RUNS
+
+GA <==>|"fitness IS a backtest"| ENGINE
+A_EVO -.->|"decoded from a<br/>stored genome"| GA
+GA ==> R_EVO
+
+ENGINE ==> R_RUNS
+ENGINE ==> R_HOLD
+ENGINE ==> FORWARD
+FORWARD ==> R_FWD
+FORWARD ==> R_HOLD
+FORWARD -.-> RESULTS
+ENGINE -.-> RESULTS
+
+R_RUNS ==> REPORTING
+R_FWD ==> REPORTING
+R_EVO ==> REPORTING
+REPORTING ==> O_BT
+REPORTING ==> O_FW
+REPORTING ==> O_GA
+REPORTING ==> O_EX
+
+%% ============================== STYLE ===============================
+classDef src fill:#e8f0fb,stroke:#4C78A8,stroke-width:1.5px,color:#12243a
+classDef code fill:#eef7ee,stroke:#54A24B,stroke-width:1.5px,color:#14290f
+classDef store fill:#fdf3e3,stroke:#F58518,stroke-width:1.5px,color:#3a2408
+classDef guard fill:#fdecec,stroke:#E45756,stroke-width:1.5px,color:#3d1010
+classDef out fill:#f3ecfa,stroke:#B279A2,stroke-width:1.5px,color:#2c1330
+
+class WIKI,SEC,YF,FRED,KF src
+class INGEST,NORMALIZE,FEATURES,ENGINE,GA,FORWARD,REPORTING,A_BASE,A_WRIT,A_LEARN,A_EVO,A_MINE,A_TIME code
+class BRONZE,SILVER,GOLD,R_RUNS,R_EVO,R_FWD,RESULTS store
+class CHECKS,R_HOLD guard
+class O_BT,O_FW,O_GA,O_EX out

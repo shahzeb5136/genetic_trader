@@ -49,8 +49,9 @@ Where the reports live
 ----------------------
 Not here. `store.py` exposes seven pure read functions returning DataFrames and
 dataclasses; `reporting/forward_views.py` composes them into an executive summary, one
-technical report per candidate, a cross-sectional decay analysis and an honesty page,
-and `sp500lab report forward` writes the set. That separation is the one ADR-028 draws
+technical report per candidate, a cross-sectional decay analysis and an honesty page.
+`sp500lab report forward` writes the first two into `reports/forward/` - an index and
+one page per algorithm, nothing else (ADR-045). That separation is the one ADR-028 draws
 for everything else, and it is what lets a forward report be rebuilt years later from
 the record alone, with no panel and no re-run.
 

@@ -60,7 +60,7 @@ Read it with two cautions attached. `random_weight` also "held": a verdict says 
 strategy matched its own prediction, not whether it is any good. And 2022–2026 is one
 4.6-year regime dominated by mega-caps, against which every long-only equal-weighted
 strategy here was structurally disadvantaged. `python -m sp500lab report forward` writes
-the full set into `reports/forward_tests/`.
+the set into `reports/forward/` — an index and one page per algorithm.
 
 **What is still missing is a true walk-forward harness**, and it is the next thing worth
 building. GA fitness currently measures fold *consistency* inside the research window,
@@ -291,8 +291,10 @@ maxDD, deflated 0.9828. Forward: **decayed to 0.20** — the third GA winner in 
 decay, now the project's most replicated result.
 
 **Two report pages.** `report algorithms` — the Algorithm Book, every competitor
-explained from its own docstring and scored on one page — and `report timing`. Both
-regenerate inside `report all` and land on the index.
+explained from its own docstring and scored on one page — and `report timing`. Both are
+on-demand pages under `reports/extra/` since ADR-045; the two report sets hold only an
+index and one page per algorithm. The genetic algorithm has its own three-page set,
+`report genetic` -> `reports/genetic_algorithm/` (ADR-046).
 
 **The forward harness grew a `runner` parameter** so the leg engine's results flow
 through the same seal → paired comparison → store pipeline as everything else. All
@@ -447,7 +449,7 @@ The machine exists; the holdout is still unspent.
 
 **6c. The forward test — DONE, and the holdout is spent.** The roster was sealed as one
 set and run on 2022–2026 under all three cost settings; `report forward` publishes the
-result into `reports/forward_tests/`. See the top of this document for what it found.
+result into `reports/forward/`. See the top of this document for what it found.
 Testing *everything* is the honest version of running it before a walk-forward existed —
 no selection was made on out-of-sample data — but it spends the period on twenty-two
 candidates rather than one or two.

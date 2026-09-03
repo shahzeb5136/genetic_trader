@@ -7,7 +7,7 @@ spec, prints, touches argparse or writes a file.
 
 That split is the point. These functions used to live inside `cli.py` as private
 helpers of the command handlers, which meant the only way to reach the Algorithm Book's
-data was to construct an `argparse.Namespace` - and `cmd_all` really did, calling
+data was to construct an `argparse.Namespace` - and the old `cmd_all` really did, calling
 `cmd_algorithms(Namespace(out=..., open_after=False))` so that one page could appear in
 the report set. A command calling another command through its own argument parser is
 the shape a missing module makes. This is that module.
@@ -17,13 +17,18 @@ Some of these WRITE to the registry as a side effect: `monthly_entries` and
 study "reports". That is deliberate - the book is meant to be complete on a cold
 checkout - but it is why they take the loaded frame and hand back a reloaded one rather
 than caching it.
+
+The roster lives here too. `roster()` and `ga_winners()` decide which algorithms the two
+report sets are sets OF, and they are defined once so `report backtest` and `report
+forward` can never disagree about it (ADR-045).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from .util import slugify
+from ..paths import BACKTEST_REPORTS_DIR
+from .util import page_href
 
 BOOK_FAMILIES = {
     "baselines": "The null hypotheses",
@@ -91,6 +96,77 @@ def evolved_winners() -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------
+# The roster: what the two report sets are sets OF
+# --------------------------------------------------------------------------
+
+#: How many genetic-algorithm winners the report sets carry: the best `GA_WINNERS_SHOWN`
+#: searches on disk, ranked by the research Sharpe of each study's best logged run. Every
+#: search still exists in `data/experiments/evolve/` and in the registry; the sets show
+#: the top of the list so the folder stays readable (ADR-045).
+GA_WINNERS_SHOWN = 3
+
+
+def roster(group: str = "all") -> tuple[str, ...]:
+    """The hand-written algorithms a report set is a set OF.
+
+    `all` is every built-in strategy PLUS the `custom` group. That is different from the
+    engine's `GROUPS["all"]`, which deliberately leaves custom strategies off the
+    scoreboard everyone else is measured against: the report set is where a strategy of
+    your own is meant to be read next to the rest. Any other group name is taken from
+    `GROUPS`; anything else is a comma-separated list of strategy names.
+    """
+    from ..strategies import GROUPS
+    if group == "all":
+        base = tuple(GROUPS["all"])
+        return base + tuple(n for n in GROUPS["custom"] if n not in base)
+    if group in GROUPS:
+        return tuple(GROUPS[group])
+    return tuple(n.strip() for n in str(group).split(",") if n.strip())
+
+
+def ga_winners(limit: int | None = GA_WINNERS_SHOWN) -> list[dict]:
+    """The winners of the best `limit` genetic-algorithm searches on disk.
+
+    Ranked by the research-window Sharpe of each study's best logged run, so "top" means
+    what the search itself was maximising. `None` means every search; 0 means none.
+    Same entries as `evolved_winners()`: name, strategy, claim, study.
+    """
+    if limit is not None and limit <= 0:
+        return []
+    ranked = sorted(evolved_winners(), key=lambda w: -_best_sharpe(w["study"]))
+    return ranked if limit is None else ranked[:limit]
+
+
+def _best_sharpe(study: str) -> float:
+    """The Sharpe of a study's best logged run; -inf when the registry has none."""
+    from ..backtest import registry
+    try:
+        best = registry.best(study)
+    except Exception:                                             # noqa: BLE001
+        return float("-inf")
+    value = maybe_float(best.get("sharpe")) if best is not None else None
+    return float("-inf") if value is None else value
+
+
+def forward_roster(records, group: str = "all",
+                   ga: int | None = GA_WINNERS_SHOWN) -> list[str]:
+    """The roster, restricted to what the forward store actually holds.
+
+    The forward set shows the SAME algorithms as the backtest set. Nothing that was
+    forward-tested leaves the record - the index still counts every look - but a page is
+    written only for a roster member, and `report forward` names the roster members that
+    have no forward record yet.
+    """
+    names = list(roster(group)) + [w["name"] for w in ga_winners(ga)]
+    present = set(records["strategy"].astype(str)) if len(records) else set()
+    out: list[str] = []
+    for n in names:
+        if n in present and n not in out:
+            out.append(n)
+    return out
+
+
 def claim_of(strategy) -> str:
     """The first paragraph of a strategy's own docstring, as prose.
 
@@ -110,7 +186,7 @@ def claim_for(name: str) -> str:
 
     A registered strategy's claim is its docstring, taken from the source so the two
     cannot drift. An evolved winner has no docstring - it was never written by anyone -
-    so its claim is the decoded genome, which is the same text `report all` gives it and
+    so its claim is the decoded genome, which is the same text `report backtest` gives it and
     is the reason the search space is bounded to something readable (ADR-031).
     """
     from ..backtest.strategy import get_strategy
@@ -277,7 +353,7 @@ def maybe_float(v):
 
 def monthly_entries(df, window_cache, forward, curves_wanted):
     """AlgorithmEntry list for every registered monthly strategy, running any that
-    have no research-window rows yet (logged under study 'reports', like cmd_all)."""
+    have no research-window rows yet (logged under study 'reports', like cmd_backtest)."""
     from ..backtest import run_backtest
     from ..backtest.strategy import get_strategy
     from ..strategies import GROUPS
@@ -312,7 +388,7 @@ def monthly_entries(df, window_cache, forward, curves_wanted):
                                    str(real["end"])),
                 deflation=deflation_from(df, real),
                 forward=forward.get(name),
-                href=f"strategy-{slugify(name)}.html",
+                href=f"../{BACKTEST_REPORTS_DIR.name}/{page_href(name)}",
             )
             curves_wanted[name] = real.get("run_id")
             entries.append(entry)
@@ -648,3 +724,176 @@ def calendar_lab() -> dict:
     return {"accept": accept, "rules": rules,
             "gross_curves": gross_curves, "net_curves": net_curves,
             "members": members, "member_summary": summarise(members)}
+
+
+# --------------------------------------------------------------------------
+# The genetic-algorithm lab (ADR-046)
+#
+# Everything the three `reports/genetic_algorithm/` pages need, read from the search
+# checkpoints, the trial log and the forward store. Nothing here re-runs a search or a
+# backtest: a search is thousands of evaluations and its record is already on disk.
+# --------------------------------------------------------------------------
+
+#: Filenames the lab writes. One place, because three pages cross-link to each other.
+GENETIC_PAGES = {
+    "methodology": "methodology.html",
+    "features": "features.html",
+    "searches": "evolved-algorithms.html",
+}
+
+
+def genetic_lab() -> dict:
+    """Everything the genetic-algorithm pages show, in one call.
+
+    Returns `searches` (one entry per search with a checkpoint on disk, best research
+    Sharpe first), `registry_only` (searches the trial log remembers but whose
+    checkpoint is gone, so no winner can be decoded), `presets` and `genome`.
+    """
+    from ..strategies.genome import PRESETS
+
+    searches = [_search_record(study) for study in _checkpointed_studies()]
+    searches = [s for s in searches if s is not None]
+    searches.sort(key=lambda s: -(s["research"] or {}).get("sharpe", float("-inf")))
+    return {
+        "searches": searches,
+        "registry_only": _registry_only_studies({s["study"] for s in searches}),
+        "presets": {name: tuple(features) for name, features in PRESETS.items()},
+        "genome": genome_anatomy(),
+    }
+
+
+def _checkpointed_studies() -> list[str]:
+    from ..evolve.engine import EVOLVE_DIR
+    if not EVOLVE_DIR.exists():
+        return []
+    return sorted(p.stem for p in EVOLVE_DIR.glob("*.jsonl"))
+
+
+def _registry_only_studies(known: set[str]) -> list[dict]:
+    """GA studies the trial log holds but no checkpoint explains.
+
+    Named rather than dropped. Those trials still count toward every deflated Sharpe in
+    their own study, and a reader comparing the page against `experiments studies` has
+    to be able to see why one of them has no winner.
+    """
+    from ..backtest import registry
+    try:
+        studies = registry.studies()
+    except Exception:                                             # noqa: BLE001
+        return []
+    out = []
+    for _, r in studies.iterrows():
+        name = str(r["study"])
+        if not name.startswith("ga-") or name in known:
+            continue
+        out.append({"study": name, "runs": int(r.get("runs") or 0),
+                    "trials": int(r.get("trials") or 0),
+                    "best_sharpe": maybe_float(r.get("best_sharpe")),
+                    "deflation": study_deflation(name)})
+    return out
+
+
+def _search_record(study: str) -> dict | None:
+    """One search: its settings, its training history, its winner, and what became of it."""
+    import json
+
+    import numpy as np
+
+    from ..evolve.engine import EVOLVE_DIR, load_history, load_population, study_preset
+    from ..strategies.genome import (DEAD_ZONE, active_features, alpha_genome,
+                                     describe_genome)
+
+    path = EVOLVE_DIR / f"{study}.jsonl"
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not lines:
+        return None
+    try:
+        config = json.loads(lines[0]).get("config", {})
+    except json.JSONDecodeError:
+        config = {}
+
+    preset = study_preset(study)
+    genome = alpha_genome(preset)
+    population = [p for p in load_population(study) if p.get("fitness") is not None]
+    if not population:
+        return None
+    winner = max(population, key=lambda p: p["fitness"])
+    vector = np.asarray(winner["vector"], dtype=float)
+    decoded = genome.decode(vector)
+
+    weights = sorted(((n[2:], float(v)) for n, v in decoded.items()
+                      if n.startswith("w_") and abs(v) >= DEAD_ZONE),
+                     key=lambda kv: -abs(kv[1]))
+    name = f"{study}-best"
+    df = reload_registry()
+    row = research_row(df, name, "realistic")
+    return {
+        "study": study,
+        "preset": preset,
+        "config": config,
+        "history": load_history(study),
+        "winner_name": name,
+        "winner_fitness": maybe_float(winner.get("fitness")),
+        "weights": weights,
+        "n_ignored": len(PRESETS_LEN(preset)) - len(weights),
+        "active": active_features(genome, vector),
+        "portfolio": {k: decoded[k] for k in
+                      ("top_k", "weighting", "max_weight", "use_regime",
+                       "defensive_gross", "vol_trigger")},
+        "prose": describe_genome(genome, vector),
+        "usage": _feature_usage(population, genome),
+        "n_population": len(population),
+        "deflation": study_deflation(study),
+        "research": row_stats(row) if row is not None else None,
+        "window": (f"{str(row['start'])[:7]} → {str(row['end'])[:7]}"
+                   if row is not None else ""),
+        "forward": forward_lookup().get(name),
+    }
+
+
+def PRESETS_LEN(preset: str) -> tuple[str, ...]:
+    from ..strategies.genome import PRESETS
+    return PRESETS[preset]
+
+
+def _feature_usage(population: list[dict], genome) -> dict[str, int]:
+    """How many of the final population put a live weight on each feature.
+
+    The winner is one draw. What the whole surviving population agrees on is the more
+    honest statement about what the search actually converged toward, and it is the one
+    number on these pages that a single lucky individual cannot move.
+    """
+    import numpy as np
+
+    from ..strategies.genome import active_features
+
+    counts: dict[str, int] = {}
+    for individual in population:
+        for feature in active_features(genome,
+                                       np.asarray(individual["vector"], dtype=float)):
+            counts[feature] = counts.get(feature, 0) + 1
+    return counts
+
+
+def genome_anatomy() -> dict:
+    """The search space itself: the portfolio genes, the constants, the defaults.
+
+    Read off `alpha_genome` and `EvolutionConfig` rather than restated, so the
+    methodology page cannot drift from the code it describes.
+    """
+    from ..evolve.engine import EvolutionConfig
+    from ..evolve.operators import BLX_ALPHA
+    from ..strategies.genome import DEAD_ZONE, PRESETS, WEIGHTINGS, alpha_genome
+
+    genome = alpha_genome("price")
+    shape = [g for g in genome.genes if not g.name.startswith("w_")]
+    return {
+        "dead_zone": DEAD_ZONE,
+        "blx_alpha": BLX_ALPHA,
+        "weightings": WEIGHTINGS,
+        "defaults": EvolutionConfig().as_dict(),
+        "shape_genes": [{"name": g.name, "low": g.low, "high": g.high,
+                         "integer": g.integer, "choices": g.choices, "note": g.note}
+                        for g in shape],
+        "sizes": {name: len(alpha_genome(name)) for name in PRESETS},
+    }

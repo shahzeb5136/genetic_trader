@@ -16,7 +16,7 @@ python -m sp500lab backtest trades momentum_12_1
 python -m sp500lab report trades momentum_12_1 --open
 ```
 
-The first writes `reports/trades/momentum_12_1/trades.csv` plus the holdings and any
+The first writes `results/trades/momentum_12_1/trades.csv` plus the holdings and any
 forced exits. The second writes one self-contained HTML page with the CSV embedded in it,
 so a report emailed on its own still carries its evidence.
 
@@ -129,7 +129,7 @@ It is **on by default** for ordinary runs and **off inside the genetic algorithm
 with it on is the *same trial* — the fingerprint does not include it — so nothing is lost:
 
 ```bash
-python -m sp500lab evolve best ga-price-1 --trades reports/trades/ga-price-1
+python -m sp500lab evolve best ga-price-1 --trades results/trades/ga-price-1
 ```
 
 ---

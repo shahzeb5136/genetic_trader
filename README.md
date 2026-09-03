@@ -131,7 +131,7 @@ python -m sp500lab features build && python -m sp500lab features check
 ```
 
 ```bash
-python -m sp500lab report all --open
+python -m sp500lab report backtest --open
 ```
 
 ```bash
@@ -271,17 +271,36 @@ forward harness.
 ## Everything as reports
 
 ```bash
-python -m sp500lab report all --open
+python -m sp500lab report backtest --open
 ```
 
-One self-contained HTML page per strategy, one for the feature layer, and an index that
-links them together. No server, no build step, no Python needed to read any of it — the
-folder is the deliverable.
+```bash
+python -m sp500lab report forward --open
+```
 
-Each strategy page carries, in this order: **what it claims** (taken from the strategy's
+```bash
+python -m sp500lab report genetic --open
+```
+
+Two folders of algorithm pages, and each holds exactly two kinds of file: an index with every algorithm's
+headline statistics — CAGR, volatility, Sharpe, drawdown, Sharpe against the index over
+its own window, the deflated Sharpe where a search produced it — and one self-contained
+page per algorithm. `reports/backtest/` is the research window; `reports/forward/` is
+2022 onward, prediction against outcome. Same roster in both: every built-in strategy,
+your `custom` group, and the winners of the top three genetic-algorithm searches. No
+server, no build step, no Python needed to read any of it — the folder is the deliverable
+([ADR-045](docs/DECISIONS.md)).
+
+`reports/genetic_algorithm/` is a third, smaller set: three pages on the search itself —
+how it works, what it is allowed to read, and every search with its winning genome decoded
+into a table of weighted features, its fitness and diversity by generation, its deflated
+Sharpe and its forward verdict. It runs no search and no backtest; every figure comes off
+the checkpoints already on disk ([ADR-046](docs/DECISIONS.md)).
+
+Each backtest page carries, in this order: **what it claims** (taken from the strategy's
 own docstring, so the report and the code cannot drift apart), the headline against the
 index over its own window, the equity curve and drawdown, every calendar year, rolling
-Sharpe and a monthly heatmap, all three cost settings, **every order as a downloadable
+Sharpe and a monthly heatmap, all three cost settings, **its orders as a downloadable
 CSV embedded in the page**, what it would hold today, and finally every reason to distrust
 the numbers above.
 
@@ -290,6 +309,9 @@ The scoreboard on the index says which strategies were **written** and which wer
 the maximum over every configuration the search tried, and printing that in the same sorted
 column as a hand-written one without saying so would be the most misleading thing this
 project could do.
+
+Everything else is still one command away and lands in `reports/extra/`, never inside
+the two sets:
 
 ```bash
 python -m sp500lab report strategy quality_value --open   # just one
@@ -321,7 +343,8 @@ class MyIdea(FeatureStrategy):
 
 Add the name to `GROUPS["custom"]` and everything else follows automatically — the
 registry logs it, the holdout guard protects it, the cost model charges it, the trade
-ledger records its orders, and `report all custom` publishes it.
+ledger records its orders, and `report backtest` publishes it — the report set includes
+the `custom` group.
 
 Return a **score**, not weights: `portfolio.py` handles the top-k cut, the per-name cap,
 the long-only check and the unbiased tie-break, so the scoreboard compares your idea
@@ -342,7 +365,9 @@ python -m sp500lab backtest trades momentum_12_1
 python -m sp500lab report trades momentum_12_1 --open
 ```
 
-Every order, with the **as-traded** price a broker printed that morning and the real share
+The first writes `results/trades/momentum_12_1/`; the second writes a page under
+`reports/extra/` with the ledger embedded in it. Every order comes with the **as-traded**
+price a broker printed that morning and the real share
 count — checkable against any quote source — alongside the adjusted figures the accounting
 used:
 
@@ -637,10 +662,11 @@ of a leak the harness caught.
 python -m sp500lab report forward --open
 ```
 
-writes the full set into `reports/forward_tests/`: an executive summary, one technical
-report per candidate, the cross-sectional decay analysis, an honesty page, Markdown
-copies of all of it, and the raw CSVs. Nothing in that path runs a backtest — every
-figure comes out of the stored record.
+writes `reports/forward/`: an index with every algorithm's verdict, forward CAGR and
+Sharpe against the index, and one page per forward-tested algorithm — prediction against
+outcome, the significance of the gap, all nine checks, every year, all three cost
+settings, and the orders it placed. Nothing in that path runs a backtest — every figure
+comes out of the stored record.
 
 [FORWARD_TEST.md](docs/FORWARD_TEST.md) ·
 [ADR-033, ADR-034 and ADR-035](docs/DECISIONS.md)
@@ -652,6 +678,7 @@ figure comes out of the stored record.
 | Doc | Read it for |
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layer design, vault/tail split, why bronze is sacred |
+| [PROJECT_MAP.md](docs/PROJECT_MAP.md) | **One diagram of the whole project**, and where every part lives on disk |
 | [DATA_DICTIONARY.md](docs/DATA_DICTIONARY.md) | Every table and column |
 | [SOURCES.md](docs/SOURCES.md) | Every source: cost, limits, coverage, gotchas |
 | [DECISIONS.md](docs/DECISIONS.md) | ADRs — *why* things are the way they are |

@@ -32,11 +32,13 @@ python -m sp500lab backtest trades my_idea
 python -m sp500lab report strategy my_idea --open
 ```
 ```bash
-python -m sp500lab report all custom --open
+python -m sp500lab report backtest --open
 ```
 
 Nothing else needs editing. The registry logs it, the holdout guard protects it, the cost
-model charges it, the trade ledger records its orders and the report set picks it up.
+model charges it, the trade ledger records its orders and the report set picks it up: the
+`custom` group is on the report roster by default, so your idea gets its own page in
+`reports/backtest/` and its row on the index next to everything else (ADR-045).
 
 ---
 
@@ -78,9 +80,9 @@ python -m sp500lab features list
 typo, instead of handing you a context with no features and letting every score come back
 NaN and the run report a flat cash curve.
 
-Everything in the layer is documented in [FEATURES.md](FEATURES.md) and in the generated
-`reports/features.html`, which says what each one is, which end is historically good, and
-how often it actually has a value.
+Everything in the layer is documented in [FEATURES.md](FEATURES.md) and in the page
+`sp500lab report features` writes to `reports/extra/features.html`, which says what each
+one is, which end is historically good, and how often it actually has a value.
 
 ### Or compute your own
 

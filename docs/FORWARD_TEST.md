@@ -382,17 +382,21 @@ curve, the chart and the 2022 row of the annual table — about 2% of the eviden
 python -m sp500lab report forward --open
 ```
 
-Writes a whole directory — `reports/forward_tests/` by default — and every page is
-self-contained: no server, no CDN, no build step.
+Writes `reports/forward/` — one folder, two kinds of file, every page self-contained: no
+server, no CDN, no build step.
 
 | File | What it is |
 |---|---|
-| `index.html` | the executive summary: verdicts, the paired scoreboard, the research-versus-forward scatter, every curve |
-| `forward-<name>.html` | one per candidate: prediction against outcome, the significance of the gap, all nine checks, the curve, every year, the monthly grid, all three cost settings, full provenance, and the orders it placed |
-| `decay-analysis.html` | the cross-section: did the research ranking predict the forward ranking? |
-| `honesty.html` | what limits all of it |
-| `EXECUTIVE_SUMMARY.md`, `DECAY_ANALYSIS.md`, `HONESTY.md`, `markdown/*.md` | the same pages as text, for reading without a browser |
-| `data/*.csv` | the records, the curves and the seals, so the numbers are separable from the argument |
+| `index.html` | the executive summary: verdicts, the paired scoreboard, the research-versus-forward scatter, every curve, and a card per algorithm |
+| `<algorithm>.html` | one per forward-tested algorithm on the roster: prediction against outcome, the significance of the gap, all nine checks, the curve, every year, the monthly grid, all three cost settings, full provenance, and the orders it placed |
+
+The roster is the one the backtest set uses — `reporting.queries.roster()` plus the top
+three GA winners — so `backtest/low-vol.html` and `forward/low-vol.html` are the same
+strategy on either side of the boundary. Candidates that were forward-tested but are not
+on the roster (the calendar rules) are named on the index and still count toward its
+multiple-testing bar. The cross-sectional decay analysis and the forward honesty page
+are built from Python when wanted, as `forward_decay_report()` and
+`forward_honesty_report()` over the same records ([ADR-045](DECISIONS.md)).
 
 **Nothing in that path runs a backtest or reads the panel.** Every figure comes out of
 `data/experiments/forward/`, which is the ADR-034 guarantee being exercised rather than

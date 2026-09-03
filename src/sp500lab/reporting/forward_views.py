@@ -23,6 +23,10 @@ Four reports, one per question
                              exists to answer, and it is not visible in any single report
 ``forward_honesty_report``   what would make you distrust all of the above
 
+`sp500lab report forward` writes the first two into `reports/forward/` - an index and one
+page per algorithm, nothing else (ADR-045). The decay analysis and the honesty page are
+built from Python when they are wanted; they take the same records.
+
 The editorial rule, inherited and sharpened
 --------------------------------------------
 `views.py` says the caveats travel with the numbers. Here there is one caveat that
@@ -67,7 +71,7 @@ from .util import finite as _finite
 from .util import gt as _gt
 from .util import lt as _lt
 from .util import now as _now
-from .util import slugify
+from .util import page_href, slugify
 
 BENCHMARK_LABEL = "SPY"
 
@@ -323,7 +327,8 @@ def _num_cell(value, fmt, *, emphasis: str = "", title: str = "") -> Cell:
 
 
 def strategy_href(name: str) -> str:
-    return f"forward-{slugify(name)}.html"
+    """`<slug>.html`, the same name the backtest set uses for the same algorithm."""
+    return page_href(name)
 
 
 def primary_rows(records: pd.DataFrame, cost_model: str = PRIMARY_COSTS) -> pd.DataFrame:
@@ -356,9 +361,21 @@ def primary_rows(records: pd.DataFrame, cost_model: str = PRIMARY_COSTS) -> pd.D
 # ==========================================================================
 
 def forward_index_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_COSTS,
-                         extra_cards: list[dict] | None = None) -> Report:
-    """The landing page: what survived 2022-2026, and how much that is worth knowing."""
+                         extra_cards: list[dict] | None = None,
+                         roster: list[str] | None = None) -> Report:
+    """The landing page: what survived 2022-2026, and how much that is worth knowing.
+
+    `roster` restricts the candidates SHOWN, not the candidates COUNTED. The
+    multiple-testing bar and the honesty section are computed over every record, and the
+    page names what it leaves out - a candidate that was looked at counts whether or not
+    it has a page.
+    """
     rows = primary_rows(records, cost_model)
+    hidden: list[str] = []
+    if roster is not None:
+        keep = {str(n) for n in roster}
+        hidden = [str(n) for n in rows["strategy"] if str(n) not in keep]
+        rows = rows[rows["strategy"].astype(str).isin(keep)].reset_index(drop=True)
     report = Report(
         title="Forward test: 2022 onward",
         subtitle="What the strategies actually did after the research window ended.",
@@ -380,10 +397,13 @@ def forward_index_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_COS
 
     # ---- the headline ----------------------------------------------------
     head = Section("The short version", blurb=_headline_prose(rows, cost_model))
+    if extra_cards:
+        head.add(LinkGrid([LinkCard(**c) for c in extra_cards]))
     head.add(_verdict_tiles(rows))
     head.add(_control_note(rows))
     head.add(_power_note(months))
     head.add(_selection_note(bar))
+    head.add(_hidden_note(hidden))
     head.add(_seal_note(rows))
     report.add(head)
 
@@ -415,8 +435,7 @@ def forward_index_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_COS
         report.add(chart)
 
     # ---- links -----------------------------------------------------------
-    cards = [LinkCard(**c) for c in (extra_cards or [])]
-    cards += [
+    cards = [
         LinkCard(
             title=str(r["strategy"]), href=strategy_href(str(r["strategy"])),
             blurb=str(r.get("verdict_reason", ""))[:220],
@@ -433,6 +452,19 @@ def forward_index_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_COS
 
     report.add(_index_honesty(records, rows))
     return report
+
+
+def _hidden_note(hidden: list[str]) -> Note | None:
+    """Name the tested candidates this page does not show. Silence would misstate N."""
+    if not hidden:
+        return None
+    return Note(
+        f"{len(hidden)} further candidate(s) were forward-tested and are not on this "
+        "page because they are outside the roster this set is built from: "
+        + ", ".join(hidden) + ". Every one of them still counts toward the "
+        "multiple-testing bar above, because it was looked at. Their records are in "
+        "the store and in the holdout ledger.",
+        level="info", title="Not everything tested is shown.")
 
 
 def _headline_prose(rows: pd.DataFrame, cost_model: str) -> str:

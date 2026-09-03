@@ -3,7 +3,7 @@
     sp500lab evolve run --study ga-1 --generations 25 --population 60
     sp500lab evolve run --study ga-full --preset full --metric excess_sharpe
     sp500lab evolve history ga-1
-    sp500lab evolve best ga-1 --trades reports/trades/ga-1
+    sp500lab evolve best ga-1 --trades results/trades/ga-1
 
 The command that matters after any of these is not in this file:
 
@@ -269,4 +269,4 @@ def _warn_on_stall(result) -> None:
 
 
 def default_results_dir() -> str:
-    return str(PROJECT_ROOT / "reports" / "evolve")
+    return str(PROJECT_ROOT / "results" / "evolve")

@@ -17,7 +17,7 @@ import math
 import time
 from typing import Any
 
-__all__ = ["now", "finite", "gt", "lt", "pos", "slugify"]
+__all__ = ["now", "finite", "gt", "lt", "pos", "slugify", "page_href"]
 
 
 def now() -> str:
@@ -61,3 +61,14 @@ def slugify(text: Any, fallback: str = "report") -> str:
     while "--" in out:
         out = out.replace("--", "-")
     return out.strip("-") or fallback
+
+
+def page_href(name: Any) -> str:
+    """The file a report set writes for one algorithm: `<slug>.html`, beside its index.
+
+    One function because the index and the page are written by different modules and
+    must agree character for character - and because the backtest and forward sets name
+    their pages identically, so `backtest/low-vol.html` and `forward/low-vol.html` are
+    the same strategy on either side of the boundary (ADR-045).
+    """
+    return f"{slugify(name)}.html"

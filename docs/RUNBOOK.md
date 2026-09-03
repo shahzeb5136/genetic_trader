@@ -237,7 +237,7 @@ python -m sp500lab timing run tm_overnight --all-costs
 ```
 
 ```bash
-python -m sp500lab timing decompose --out reports/overnight_by_ticker.csv
+python -m sp500lab timing decompose --out results/overnight_by_ticker.csv
 ```
 
 `timing accept` is the lab's gate, same as `backtest accept` is the engine's: buy-and-hold
@@ -416,6 +416,17 @@ re-derived by re-running anything. See [FORWARD_TEST.md](FORWARD_TEST.md).
 Full narrative in `docs/REPORTS.md`.
 
 ```bash
+python -m sp500lab report backtest --open
+```
+
+```bash
+python -m sp500lab report forward --open
+```
+
+Two folders, `reports/backtest/` and `reports/forward/`, each holding an index and one
+page per algorithm and nothing else (ADR-045). Single pages on demand:
+
+```bash
 python -m sp500lab report study baselines --open
 ```
 
@@ -435,8 +446,9 @@ python -m sp500lab report compare momentum_12_1 low_vol equal_weight
 python -m sp500lab report honesty
 ```
 
-Output goes to `reports/` (gitignored). `-o path.html` overrides the destination,
-`--open` launches a browser. Each file is self-contained: no server, no network, 15-100 KB.
+Single pages go to `reports/extra/` (gitignored, like all of `reports/`). `-o path.html`
+overrides the destination, `--open` launches a browser. Each file is self-contained: no
+server, no network.
 
 ### Troubleshooting
 

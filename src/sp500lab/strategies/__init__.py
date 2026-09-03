@@ -40,7 +40,9 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "evolved": ("evolved_blend",),
     # Yours. Deliberately NOT folded into "all": a strategy you are still working on
     # should not silently join the scoreboard everyone else is measured against. Move it
-    # up when you mean it.
+    # up when you mean it. (The REPORT set is the exception - `report backtest` includes
+    # this group by default, because that is where you read your idea next to the rest;
+    # see reporting.queries.roster() and ADR-045.)
     "custom": ("my_first_idea",),
 }
 GROUPS["all"] = tuple(n for g in ("baselines", "alpha", "frontier", "learned", "evolved")

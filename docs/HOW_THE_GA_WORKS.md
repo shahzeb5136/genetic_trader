@@ -234,8 +234,13 @@ the two searches found different things because they looked at different periods
 ```bash
 python -m sp500lab evolve run --study my-search --preset price --generations 25 --population 60
 python -m sp500lab experiments deflate my-search
-python -m sp500lab evolve best my-search --all-costs --trades reports/trades/my-search
+python -m sp500lab evolve best my-search --all-costs --trades results/trades/my-search
+python -m sp500lab report genetic --open
 ```
+
+Everything on this page is also generated as three linked HTML pages by
+`sp500lab report genetic`, with the numbers filled in from the searches that have
+actually run — see `reports/genetic_algorithm/`.
 
 Every generation is checkpointed to `data/experiments/evolve/<study>.jsonl`, so a killed
 run resumes and a finished one can be re-read without re-running. Ctrl-C returns the state

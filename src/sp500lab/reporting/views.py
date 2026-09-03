@@ -1020,17 +1020,19 @@ def index_report(specs: list, *, curves=None, studies=None, extra_cards=None,
 
     beat = [s for s in specs if _gt(s.get("d_sharpe"), 0)]
     searched = [s for s in specs if s.get("evolved")]
-    report.add(Section("Start here", blurb=(
+    start = Section("Start here", blurb=(
         "Each card opens a full report: the claim, the equity curve, every year, what it "
-        "cost, and the complete list of orders as a downloadable CSV."
-    )).add(LinkGrid([LinkCard(**c) for c in (extra_cards or [])]))
-      .add(Note(
+        "cost, and its orders as a downloadable CSV embedded in the page."))
+    if extra_cards:
+        start.add(LinkGrid([LinkCard(**c) for c in extra_cards]))
+    start.add(Note(
         f"{len(beat)} of {len(specs)} strategies beat the index on risk-adjusted return "
         "over their own window"
         + (": " + ", ".join(s["name"] for s in beat) + "." if beat else ".")
         + " That is the correct null result and it is the bar. Anything that beats it by "
           "a wide margin on a first run is much more likely to be a bug than an edge.",
-        level="info", title="The honest summary.")))
+        level="info", title="The honest summary."))
+    report.add(start)
 
     if searched:
         report.section("Start here").add(Note(
@@ -1045,10 +1047,11 @@ def index_report(specs: list, *, curves=None, studies=None, extra_cards=None,
             title=f"{len(searched)} of these were not written by a person."))
 
     report.add(Section("The scoreboard", blurb=(
-        "Sorted by Sharpe against the index over each strategy's OWN dates. Windows "
-        "differ by design — anything using SEC fundamentals starts in 2010 — and SPY "
-        "returned 10.42%/yr from 2007-04 against 15.66%/yr from 2010-07, so a raw CAGR "
-        "column ranks windows rather than strategies."
+        "Every algorithm's headline statistics, sorted by Sharpe against the index over "
+        "each strategy's OWN dates. Windows differ by design — anything using SEC "
+        "fundamentals starts in 2010 — and SPY returned 10.42%/yr from 2007-04 against "
+        "15.66%/yr from 2010-07, so a raw CAGR column ranks windows rather than "
+        "strategies. Click a name for its page."
     )).add(TableBlock(T.strategy_roster(specs))))
 
     report.add(Section("All of them", blurb="One card per strategy."

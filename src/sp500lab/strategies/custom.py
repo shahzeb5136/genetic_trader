@@ -47,12 +47,14 @@ strategies ranking on momentum rank on the *same* momentum.
 
 Making it show up everywhere
 -----------------------------
-`GROUPS` in `__init__.py` decides which strategies the suite and the report set include.
-`my_first_idea` below is in the `custom` group and deliberately NOT in `all`, so it does
-not join the main scoreboard until you put it there:
+`GROUPS` in `__init__.py` decides which strategies the engine's suite runs. `my_first_idea`
+below is in the `custom` group and deliberately NOT in `all`, so it does not join the
+suite's scoreboard until you put it there. The report set is different: `report backtest`
+includes the `custom` group by default, so your idea gets its page and its row on the
+index next to everything else:
 
     python -m sp500lab backtest suite custom
-    python -m sp500lab report all custom --open
+    python -m sp500lab report backtest --open
 
 Read `docs/ADDING_A_STRATEGY.md` for the longer version, and `strategies/alpha.py` for
 twelve worked examples that are more interesting than the one below.

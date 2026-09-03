@@ -343,7 +343,7 @@ search would add 10 MB of curves that no query reads. Re-running a winner with t
 is the **same trial** — the fingerprint does not include it — so nothing is lost:
 
 ```bash
-python -m sp500lab evolve best ga-1 --all-costs --trades reports/trades/ga-1
+python -m sp500lab evolve best ga-1 --all-costs --trades results/trades/ga-1
 ```
 
 ### A worked example

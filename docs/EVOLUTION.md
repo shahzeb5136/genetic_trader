@@ -3,8 +3,14 @@
 ```bash
 python -m sp500lab evolve run --study ga-1 --generations 25 --population 60
 python -m sp500lab experiments deflate ga-1          # <- the number that decides
-python -m sp500lab evolve best ga-1 --all-costs --trades reports/trades/ga-1
+python -m sp500lab evolve best ga-1 --all-costs --trades results/trades/ga-1
+python -m sp500lab report genetic --open             # all of it as three pages
 ```
+
+`report genetic` writes `reports/genetic_algorithm/`: the methodology, the feature
+presets and what each search converged on, and every search with its winner decoded, its
+training history charted and its forward verdict attached. It reads the checkpoints and
+re-runs nothing (ADR-046).
 
 A loop over `run_backtest`. That is the whole trick, and it is why the engine was built
 first: the fitness function **is** the backtest, so an evolved strategy is scored by

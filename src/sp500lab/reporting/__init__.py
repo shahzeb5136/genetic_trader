@@ -1,11 +1,16 @@
-"""Static HTML reports over the experiment registry.
+"""Static HTML reports over the experiment registry and the forward store.
 
-    python -m sp500lab report study baselines
-    python -m sp500lab report run 20260827T182514-586cb2
-    python -m sp500lab report registry
+    python -m sp500lab report backtest --open     -> reports/backtest/
+    python -m sp500lab report forward  --open     -> reports/forward/
+    python -m sp500lab report genetic  --open     -> reports/genetic_algorithm/
 
-One self-contained file per report: no server, no CDN, no build step. Open it offline,
-keep it next to the commit that produced it, send it to someone.
+Two sets, and each is one folder holding exactly two kinds of file: `index.html`, every
+algorithm's headline statistics on one scoreboard, and one self-contained page per
+algorithm - no server, no CDN, no build step. Open a page offline, keep it next to the
+commit that produced it, send it to someone. `reports/genetic_algorithm/` is a third,
+smaller set: three pages on the search itself, no index (ADR-046). Everything else
+(`report features`, `report registry`, `report algorithms`, ...) is on demand and lands
+in `reports/extra/` (ADR-045).
 
 Layout, in dependency order
 ---------------------------
@@ -14,12 +19,18 @@ Layout, in dependency order
     series.py   equity curves -> plot-ready arrays. Pure.
     tables.py   registry rows -> formatted tables. Pure.
     specs.py    what to draw, never how. The seam between preparation and rendering.
+    queries.py  what the pages need from the registry, the forward store and the
+                strategy classes, as plain data - and the roster the two sets share.
     views.py    composes registry data into a Report of Sections and Blocks. Pure.
     forward_views.py
                 the same, for the forward-test store. A sibling rather than more of
                 views.py: a forward report asks whether an out-of-sample result matched
                 a prediction, which needs different tables and a different voice.
-    render/     Report -> SVG and HTML. The only files that compute pixels or emit tags.
+    genetic_views.py
+                the same, for the genetic algorithm: the search space, the objective,
+                the operators, and every search with its winner decoded.
+    render/     Report -> SVG and HTML (and Markdown). The only files that compute
+                pixels or emit tags.
     cli.py      `sp500lab report ...`
 
 Everything up to and including `views.py` is testable by asserting on numbers, because
@@ -38,6 +49,8 @@ from .forward_views import (
                             forward_index_report,
                             forward_strategy_report,
 )
+from .genetic_views import features_report as genetic_features_report
+from .genetic_views import methodology_report, searches_report
 from .render.html import render as render_html
 from .render.html import write as write_html
 from .specs import Report, Section
@@ -58,5 +71,6 @@ __all__ = [
     "trades_report", "strategy_report", "feature_report", "index_report",
     "forward_index_report", "forward_strategy_report", "forward_decay_report",
     "forward_honesty_report",
+    "methodology_report", "genetic_features_report", "searches_report",
     "render_html", "write_html",
 ]

@@ -639,7 +639,11 @@ def leakage_summary(report: dict) -> Table:
 
 
 def strategy_roster(specs: list) -> Table:
-    """Every strategy, what it claims, how it was found, and where its report is.
+    """Every algorithm's headline statistics, how it was found, and where its page is.
+
+    The index's one table: enough to decide which page to open - CAGR, volatility,
+    Sharpe, drawdown, the Sharpe against the index over the algorithm's own window, and
+    the deflated Sharpe where a search produced it.
 
     `found by` is not decoration. A written strategy's Sharpe is one draw; a searched
     one's is the maximum of however many the search took, and the maximum of N draws is
@@ -647,8 +651,8 @@ def strategy_roster(specs: list) -> Table:
     saying which is which would be the single most misleading thing this project could
     print, so the column is there and the deflated Sharpe is beside it.
     """
-    cols = ["strategy", "the claim", "found by", "window", "CAGR", "Sharpe",
-            "vs index", "deflated"]
+    cols = ["strategy", "the claim", "found by", "window", "CAGR", "vol", "Sharpe",
+            "maxDD", "vs index", "deflated"]
     rows = []
     for spec in specs:
         beat = spec.get("d_sharpe")
@@ -667,7 +671,9 @@ def strategy_roster(specs: list) -> Table:
                   "warn" if searched else "muted"),
             _text(spec.get("window", ""), "muted"),
             _cell(spec.get("cagr"), theme.pct),
+            _cell(spec.get("ann_vol"), theme.pct),
             _cell(spec.get("sharpe"), theme.num),
+            _cell(spec.get("max_drawdown"), theme.pct),
             _cell(beat, lambda v: f"{v:+.2f}",
                   emphasis="good" if _gt(beat, 0) else "bad"),
             _cell(dsr, theme.num,
@@ -677,8 +683,7 @@ def strategy_roster(specs: list) -> Table:
                         "were evaluated before it was picked."),
         ])
     return Table(cols, rows,
-                 aligns=["left", "left", "left", "left", "right", "right", "right",
-                         "right"],
+                 aligns=["left", "left", "left", "left"] + ["right"] * 6,
                  caption="`vs index` is the Sharpe difference against SPY over each "
                          "strategy's OWN window — the only comparison here that is "
                          "like-for-like. `deflated` corrects for how many configurations "

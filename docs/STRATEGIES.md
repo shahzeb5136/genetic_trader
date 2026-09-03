@@ -185,7 +185,8 @@ algorithm is for.
 Added **after** the 2022-2026 forward test was spent — read ADR-037's contamination note
 before treating any of their numbers as out-of-sample. Research window 2007-04→2021-12,
 realistic costs, measured 2026-08-30; SPY made 10.70%/yr at Sharpe 0.60 over the same
-dates, and ΔSharpe is against that. `reports/algorithms.html` carries the live version:
+dates, and ΔSharpe is against that. `sp500lab report algorithms` (→ `reports/extra/algorithms.html`)
+carries the live version:
 
 | strategy | CAGR | Sharpe | ΔSharpe | the claim in one line |
 |---|---:|---:|---:|---|

@@ -359,6 +359,36 @@ def test_the_html_set_writes_and_is_self_contained(tmp_path, store):
         assert forbidden not in text
 
 
+def test_pages_are_named_by_algorithm_with_no_folder_prefix():
+    """`backtest/low-vol.html` and `forward/low-vol.html` are the same strategy."""
+    assert FV.strategy_href("low_vol") == "low-vol.html"
+
+
+def test_the_index_names_tested_candidates_it_does_not_show(store):
+    """A roster restricts what is SHOWN, never what is COUNTED (ADR-045)."""
+    report = FV.forward_index_report(store.load(), roster=["great", "faded"])
+    text = _text(report)
+    assert "broken" in text and "plodder" in text          # named, not hidden
+    assert "luckiest of 5" in text                         # the bar still counts them
+    table = next(b.table for s in report.sections for b in s.blocks
+                 if isinstance(b, TableBlock))
+    assert {row[0].text for row in table.rows} == {"great", "faded"}
+
+
+def test_the_forward_folder_holds_an_index_and_one_page_per_algorithm(tmp_path, store):
+    from sp500lab.cli import main
+
+    out = tmp_path / "fwd"
+    rc = main(["report", "forward", "great,faded,broken,random_weight,plodder",
+               "--no-evolved", "-o", str(out)])
+    assert rc == 0
+    assert sorted(p.name for p in out.iterdir()) == [
+        "broken.html", "faded.html", "great.html", "index.html", "plodder.html",
+        "random-weight.html"]
+    index = (out / "index.html").read_text(encoding="utf-8")
+    assert 'href="great.html"' in index
+
+
 def test_every_candidate_link_points_at_a_page_the_set_contains(store):
     """A dead relative link is the one defect an index page can have and still look fine."""
     from sp500lab.reporting.specs import LinkGrid

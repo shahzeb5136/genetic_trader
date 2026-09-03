@@ -25,6 +25,7 @@ import pandas as pd
 import pytest
 
 from sp500lab.features.catalog import FAMILIES, FEATURE_DOCS, by_family, describe
+from sp500lab.reporting import queries as Q
 from sp500lab.reporting import tables as T
 from sp500lab.reporting.specs import Download, LinkGrid, Note, TableBlock
 from sp500lab.reporting.views import _headline_claim, _trades_download, index_report
@@ -86,6 +87,15 @@ def test_a_written_strategy_is_never_labelled_searched():
     assert table.rows[0][2].text == "written"
 
 
+def test_the_roster_table_carries_the_headline_statistics():
+    """The index has one table, and it has to be enough to decide which page to open."""
+    table = T.strategy_roster([_spec("a", ann_vol=0.15, max_drawdown=-0.3)])
+    assert {"CAGR", "vol", "Sharpe", "maxDD", "vs index", "deflated"} <= set(table.columns)
+    row = dict(zip(table.columns, table.rows[0]))
+    assert row["vol"].text == "15.00%"
+    assert row["maxDD"].text == "-30.00%"
+
+
 def test_the_deflated_sharpe_is_shown_for_everything_that_has_one():
     table = T.strategy_roster([_spec("x", n_trials=60, deflated_sharpe=0.8)])
     assert "0.8" in table.rows[0][-1].text
@@ -100,8 +110,9 @@ def test_a_long_claim_is_trimmed_rather_than_wrapping_the_table():
 
 
 def test_beating_the_index_is_emphasised_in_both_directions():
-    good = T.strategy_roster([_spec("a", d_sharpe=0.10)]).rows[0][6]
-    bad = T.strategy_roster([_spec("b", d_sharpe=-0.10)]).rows[0][6]
+    col = T.strategy_roster([_spec("a")]).columns.index("vs index")
+    good = T.strategy_roster([_spec("a", d_sharpe=0.10)]).rows[0][col]
+    bad = T.strategy_roster([_spec("b", d_sharpe=-0.10)]).rows[0][col]
     assert good.emphasis == "good" and bad.emphasis == "bad"
     assert good.text.startswith("+")
 
@@ -203,6 +214,58 @@ def test_the_cap_never_produces_an_empty_download():
 
 
 # --------------------------------------------------------------------------
+# The roster, and the folder (ADR-045)
+# --------------------------------------------------------------------------
+
+def test_the_roster_is_every_builtin_plus_the_custom_group():
+    from sp500lab.strategies import GROUPS
+    names = Q.roster("all")
+    assert set(GROUPS["all"]) <= set(names)
+    assert set(GROUPS["custom"]) <= set(names)
+    assert len(names) == len(set(names))
+
+
+def test_a_named_group_or_a_list_is_taken_literally():
+    from sp500lab.strategies import GROUPS
+    assert Q.roster("baselines") == tuple(GROUPS["baselines"])
+    assert Q.roster("low_vol, cash") == ("low_vol", "cash")
+
+
+def test_ga_winners_are_capped_and_ranked_by_research_sharpe(monkeypatch):
+    found = [{"name": "ga-a-best", "study": "ga-a"}, {"name": "ga-b-best", "study": "ga-b"},
+             {"name": "ga-c-best", "study": "ga-c"}, {"name": "ga-d-best", "study": "ga-d"}]
+    sharpe = {"ga-a": 0.5, "ga-b": 1.2, "ga-c": 0.9, "ga-d": float("-inf")}
+    monkeypatch.setattr(Q, "evolved_winners", lambda: list(found))
+    monkeypatch.setattr(Q, "_best_sharpe", lambda study: sharpe[study])
+    assert [w["name"] for w in Q.ga_winners(3)] == ["ga-b-best", "ga-c-best", "ga-a-best"]
+    assert Q.ga_winners(0) == []
+    assert len(Q.ga_winners(None)) == 4
+
+
+def test_the_forward_roster_only_names_what_was_tested(monkeypatch):
+    """The calendar rules were forward-tested; they are not on the roster, so no page."""
+    monkeypatch.setattr(Q, "ga_winners", lambda limit=None: [{"name": "ga-x-best"}])
+    records = pd.DataFrame({"strategy": ["low_vol", "tm_overnight", "ga-x-best"]})
+    assert Q.forward_roster(records) == ["low_vol", "ga-x-best"]
+
+
+def test_a_rebuild_removes_pages_an_earlier_build_left_behind(tmp_path):
+    from sp500lab.reporting.cli import _prune
+    (tmp_path / "stale.html").write_text("x")
+    (tmp_path / "keep.html").write_text("x")
+    (tmp_path / "notes.txt").write_text("x")
+    _prune(tmp_path, [tmp_path / "keep.html"])
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["keep.html", "notes.txt"]
+
+
+def test_report_all_is_still_an_alias_for_the_backtest_set():
+    from sp500lab.cli import build_parser
+    from sp500lab.reporting.cli import cmd_backtest
+    assert build_parser().parse_args(["report", "all"]).func is cmd_backtest
+    assert build_parser().parse_args(["report", "backtest"]).func is cmd_backtest
+
+
+# --------------------------------------------------------------------------
 # Real data
 # --------------------------------------------------------------------------
 
@@ -225,6 +288,20 @@ def test_every_feature_in_the_built_panel_is_documented():
 
     missing = undocumented(build_features().names)
     assert not missing, f"undocumented features: {missing}"
+
+
+@needs_data
+def test_the_backtest_folder_holds_an_index_and_one_page_per_algorithm(tmp_path):
+    """Two kinds of file and nothing else - the whole point of ADR-045."""
+    from sp500lab.cli import main
+
+    out = tmp_path / "bt"
+    rc = main(["report", "backtest", "cash,equal_weight", "--start", "2015-01-01",
+               "--no-log", "--no-evolved", "-o", str(out)])
+    assert rc == 0
+    assert sorted(p.name for p in out.iterdir()) ==         ["cash.html", "equal-weight.html", "index.html"]
+    index = (out / "index.html").read_text(encoding="utf-8")
+    assert 'href="cash.html"' in index and 'href="equal-weight.html"' in index
 
 
 @needs_data

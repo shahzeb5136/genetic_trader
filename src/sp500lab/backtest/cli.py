@@ -8,7 +8,7 @@ panel and the strategy registry only load when a backtest is actually requested.
     sp500lab backtest run momentum_12_1 --costs realistic
     sp500lab backtest run momentum_12_1 --all-costs --top-k 30
     sp500lab backtest baselines
-    sp500lab backtest trades momentum_12_1 --out reports/trades
+    sp500lab backtest trades momentum_12_1 --out results/trades
     sp500lab backtest build-spreads
     sp500lab backtest build-delisting
     sp500lab backtest coverage
@@ -25,7 +25,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..paths import PROJECT_ROOT
+from ..paths import PROJECT_ROOT, RESULTS_DIR
 
 
 def add_parser(sub) -> None:
@@ -82,7 +82,7 @@ def add_parser(sub) -> None:
                     choices=["equal", "score", "score_rank", "inverse_vol"])
     tr.add_argument("--seed", type=int, default=0)
     tr.add_argument("-o", "--out", default=None,
-                    help="output directory (default: reports/trades/<strategy>)")
+                    help="output directory (default: results/trades/<strategy>)")
     tr.add_argument("--no-holdings", action="store_true",
                     help="skip the month-by-month holdings file")
     tr.add_argument("--top", type=int, default=15,
@@ -285,7 +285,7 @@ def cmd_trades(args) -> int:
         costs=args.costs, seed=args.seed, holdout=args.holdout, study=args.study,
         log_run=not args.no_log, notes=args.notes, record_trades=True)
 
-    out_dir = Path(args.out or (PROJECT_ROOT / "reports" / "trades" / args.strategy))
+    out_dir = Path(args.out or (RESULTS_DIR / "trades" / args.strategy))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(result.summary())

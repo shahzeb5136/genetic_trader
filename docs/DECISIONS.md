@@ -1736,3 +1736,124 @@ every later snapshot and CBOE spent seven years of backtests as an ex-member. `b
 `cboe` are in the regex now, with the template pinned in the parser tests. Two live
 constituents lost to two different parser gaps, neither visible from inside the
 membership table — which is the argument for the cross-check in one sentence.
+
+---
+
+## ADR-045 — The report folder is two sets and nothing else
+
+**Status:** accepted (2026-09-03)
+
+**Context.** By 2026-08-30 `reports/` held 163 files and 254 MB: thirty strategy pages,
+the feature layer, the registry, the honesty panel, the Algorithm Book, the Calendar Lab,
+two study pages, a `trades/` folder of full ledgers plus the per-strategy sub-folders the
+`backtest trades` command wrote there, and a `forward_tests/` folder with thirty-eight
+candidate pages, a decay analysis, an honesty page, Markdown copies of everything, a
+`data/` folder of CSVs, a README and a run log. Every file was defensible on its own. As
+a folder it had stopped answering the question it exists for — *which algorithm do I
+want to look at?* — because the answer was buried under the supporting material.
+
+**Decision.** `reports/` holds two sets, `backtest/` and `forward/`, and each set holds
+exactly two kinds of file: `index.html`, a scoreboard with every algorithm's headline
+statistics (CAGR, volatility, Sharpe, drawdown, Sharpe against the index over its own
+window, the deflated Sharpe where a search produced it), and one self-contained page per
+algorithm, named by the algorithm — so `backtest/low-vol.html` and `forward/low-vol.html`
+are the same strategy on either side of the boundary. The two sets share one roster,
+defined once in `reporting.queries.roster()` and `ga_winners()`: every built-in
+strategy, the `custom` group, and the winners of the best three genetic-algorithm
+searches on disk, ranked by the research Sharpe of each search's best logged run
+(`GA_WINNERS_SHOWN`). A rebuild prunes pages an earlier build left in the default
+folder, so the folder always describes the last build; a folder chosen with `-o` is the
+user's and is never pruned.
+
+**Everything else moves out, not away.** The single-page commands — `strategy`,
+`features`, `algorithms`, `timing`, `registry`, `honesty`, `study`, `run`, `compare`,
+`trades` — still exist and default into `reports/extra/`. The forward decay analysis and
+the forward honesty page remain as views in `forward_views.py` with no command of their
+own. Trade ledgers as files are the engine's concern, not the reports': `backtest trades`
+now writes to `results/trades/<strategy>/`, beside `results/forward/`, and the report set
+no longer writes a sibling CSV — a page embeds its ledger up to `MAX_EMBEDDED_TRADES` and
+names the command that writes the whole thing. The Markdown copies and the CSV exports of
+the forward set are dropped; `render/markdown.py` stays as the second backend the seam is
+tested against.
+
+**What the roster changes.** `custom` strategies are in the report set by default. The
+engine's `GROUPS["all"]` still excludes them, so `backtest suite all` and the forward
+suite are unchanged: the scoreboard everyone is measured against is the engine's, and the
+report set is where a strategy of your own is meant to be read next to it.
+
+**What stays honest.** The forward index's multiple-testing bar is computed over every
+forward record, not over the roster, and the page names the tested candidates it does not
+show (the calendar rules, today), because a candidate that was looked at counts whether or
+not it has a page. Nothing in the record is deleted or hidden from the store; only the
+folder got smaller. `tests/test_forward_reports.py` pins it.
+
+**Consequence.** `report all` remains as an alias of `report backtest`. Three console
+logs that had been parked in `reports/` (`ga-price-1.log`, `ga-full-2.log`,
+`forward_tests/run.log`) were moved to `logs/`, since they are not regenerable and were
+never reports. Everything else under `reports/` was deleted and rebuilt.
+
+---
+
+## ADR-046 — The genetic algorithm gets its own three pages
+
+**Status:** accepted (2026-09-03)
+
+**Context.** After ADR-045 the report folder answers "which algorithm do I want to look
+at?" well and answers "where did the evolved ones come from?" not at all. An evolved
+winner appears on both scoreboards as a row with a deflated Sharpe beside it, which is
+the right amount of context in a table and nowhere near enough to judge the apparatus
+that produced it. The search itself — a bounded genome, a fold-consistency objective,
+six operators, four anti-overfitting defences, and three completed runs of ~1,400 trials
+each — was documented only in `docs/EVOLUTION.md` and `docs/HOW_THE_GA_WORKS.md`, which
+are for people who read the repository rather than for people who read the reports.
+
+**Decision.** `sp500lab report genetic` writes `reports/genetic_algorithm/`, holding
+three pages and no index:
+
+| Page | Answers |
+|---|---|
+| `methodology.html` | the search space, the objective and every penalty, the operators, the four defences |
+| `features.html` | the three presets, why they are short and frozen, and what each search converged on |
+| `evolved-algorithms.html` | every search: settings, training history, winning genome, deflation, forward verdict |
+
+**No index, deliberately.** A fourth page whose only content is three links is a file,
+not navigation. Each page carries a link grid to the other two and back to the backtest
+scoreboard, and both set indexes gained a card pointing here — the evolved winners are
+rows on those scoreboards, and this is where they came from.
+
+**The set runs nothing.** No search, no backtest, no panel. Every figure comes from the
+checkpoints in `data/experiments/evolve/`, the trial log and the forward store, so the
+pages rebuild in about a second. That is the same guarantee ADR-034 gives the forward
+reports, and it matters more here: a search is thousands of evaluations and re-running
+one to draw a chart of it would be absurd.
+
+**The anatomy is read off the code, never restated.** `queries.genome_anatomy()` reports
+the gene bounds from `alpha_genome`, the dead zone from `genome.py`, the BLX-α constant
+from `operators.py` and the defaults from `EvolutionConfig`, so the methodology page
+cannot drift from the search it describes.
+`test_the_genome_anatomy_is_read_off_the_real_genome` pins that.
+
+**Two editorial rules, both pinned by tests.** First, an evolved result never appears
+without its trial count and its deflated Sharpe, because a searched Sharpe is the maximum
+over every configuration evaluated and the maximum of N draws is high with or without
+signal. Second, the deflated Sharpe is a *probability* and is never printed as `1.000`:
+at or above 0.9995 it renders `>0.999`, because three decimals of rounding should not
+manufacture a claim of certainty that 136 monthly observations cannot support.
+
+**What the population agrees on outranks what the winner did.** The features page reports
+the winner's weight on each feature *and* the share of the final 60-individual population
+that put a live weight on it. The winner is one draw; the population share is the number
+no single lucky genome can move, and it is the more honest description of what a search
+found.
+
+**A search with no checkpoint is named, not dropped.** `ga-full-1` is 1,005 trials in the
+registry with no surviving checkpoint, so no winner can be decoded from it. It gets a row
+saying exactly that, because those trials still count toward the deflated Sharpe of
+anything logged in that study, and a reader comparing the page against
+`sp500lab experiments studies` has to be able to see why one search has no winner.
+
+**Consequence.** `reports/` now holds three folders. The genetic set is small (about
+130 KB for three searches) because it embeds no trade ledgers. What it reports today, on
+the three searches that have run: all three winners cleared the 0.95 deflated-Sharpe
+convention on the research window, and all three decayed out of sample. The pages say so
+in that order.

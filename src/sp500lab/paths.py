@@ -24,6 +24,11 @@ data/experiments/forward/
                The out-of-sample record: pre-registrations, forward tests and their
                curves. The most irreplaceable directory in the project - a forward
                test consumes a period that only exists once. See docs/FORWARD_TEST.md.
+reports/       Generated pages: `backtest/` and `forward/`, an index and one page per
+               algorithm each; `genetic_algorithm/`, three pages on the search itself;
+               and `extra/` for anything asked for on its own. Disposable. See
+               docs/REPORTS.md, ADR-045 and ADR-046.
+results/       Saved run artifacts: `forward/<forward_id>/` and `trades/<strategy>/`.
 """
 
 from __future__ import annotations
@@ -71,7 +76,19 @@ FORWARD_LOG = FORWARD_DIR / "forward_runs.jsonl"
 FORWARD_CURVE_LOG = FORWARD_DIR / "forward_curves.jsonl"
 
 #: Generated HTML reports. Disposable: rebuildable from the registry at any time.
+#: Two sets and nothing else (ADR-045): `backtest/` and `forward/` each hold an index and
+#: one page per algorithm. A page asked for on its own lands in `extra/`.
 REPORTS_DIR = PROJECT_ROOT / "reports"
+BACKTEST_REPORTS_DIR = REPORTS_DIR / "backtest"
+FORWARD_REPORTS_DIR = REPORTS_DIR / "forward"
+#: The genetic-algorithm lab: how the search works, what it may read, and what it found.
+#: Three pages, no index - each one links to the other two (ADR-046).
+GENETIC_REPORTS_DIR = REPORTS_DIR / "genetic_algorithm"
+EXTRA_REPORTS_DIR = REPORTS_DIR / "extra"
+
+#: Saved run artifacts that are not reports: forward-test results under `forward/`,
+#: exported trade ledgers under `trades/<strategy>/`. Gitignored, reproducible.
+RESULTS_DIR = PROJECT_ROOT / "results"
 
 ALL_DIRS = [
     CONFIG_DIR, DOCS_DIR, LOGS_DIR, DATA_DIR,
