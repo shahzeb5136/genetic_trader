@@ -262,5 +262,8 @@ run.
 
 Adding it to a genome preset in `strategies/genome.py` is a separate decision: every
 feature in a preset multiplies the search space and the trial count the deflated Sharpe
-has to discount.
+has to discount. Since ADR-048 the search reads **families**, not features: a new feature
+joins a family only with a prior story and a sign the literature settled, and a feature
+without one is cut with the reason recorded in `CUT_FEATURES`. Presets are immutable, so a
+new member means a new preset (ADR-038).
 

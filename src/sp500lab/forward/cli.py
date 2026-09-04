@@ -451,11 +451,36 @@ def _all_costs() -> tuple[str, ...]:
 
 
 def _resolve_strategy(args):
+    """The candidate `forward run` was given: a registered name, or a search's deliverable.
+
+    An evolved deliverable - `<study>-ensemble` or `<study>-best` - lives in a search
+    checkpoint rather than in the strategy registry, so it is looked up through
+    `evolve.winners()`, the same discovery the suite and the report sets use. Its origin
+    study is filled in from the checkpoint unless `--origin-study` was given, because a
+    forward record without the search behind the candidate would carry `n_trials=0` for
+    the most heavily searched candidate there is.
+    """
     from ..backtest.cli import _apply_construction_overrides
     from ..backtest.strategy import get_strategy
-    strat = get_strategy(args.strategy)
+    try:
+        strat = get_strategy(args.strategy)
+    except KeyError:
+        strat, origin = _evolved_by_name(args.strategy)
+        if getattr(args, "origin_study", None) is None:
+            args.origin_study = origin
     _apply_construction_overrides(strat, args)
     return strat
+
+
+def _evolved_by_name(name: str):
+    """(strategy, study) for a genetic search's deliverable, by the name it is reported under."""
+    from ..evolve.engine import winners
+    found = {w["name"]: w for w in winners()}
+    if name not in found:
+        raise SystemExit(
+            f"unknown strategy {name!r}: not a registered strategy, and no search in "
+            f"data/experiments/evolve/ hands over that name (have: {sorted(found)})")
+    return found[name]["strategy"], found[name]["study"]
 
 
 def _seal_frame():

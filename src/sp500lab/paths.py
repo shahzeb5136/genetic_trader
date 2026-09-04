@@ -24,10 +24,11 @@ data/experiments/forward/
                The out-of-sample record: pre-registrations, forward tests and their
                curves. The most irreplaceable directory in the project - a forward
                test consumes a period that only exists once. See docs/FORWARD_TEST.md.
-reports/       Generated pages: `backtest/` and `forward/`, an index and one page per
-               algorithm each; `genetic_algorithm/`, three pages on the search itself;
-               and `extra/` for anything asked for on its own. Disposable. See
-               docs/REPORTS.md, ADR-045 and ADR-046.
+reports/       Generated pages, one folder per lab: `backtest/` and `forward/`, an
+               index and one page per algorithm each; `timing/`, the calendar rules;
+               `genetic_algorithm/`, three pages on the search itself; and `extra/` for
+               anything asked for on its own. Disposable. See docs/REPORTS.md, ADR-045,
+               ADR-046 and ADR-047.
 results/       Saved run artifacts: `forward/<forward_id>/` and `trades/<strategy>/`.
 """
 
@@ -76,11 +77,16 @@ FORWARD_LOG = FORWARD_DIR / "forward_runs.jsonl"
 FORWARD_CURVE_LOG = FORWARD_DIR / "forward_curves.jsonl"
 
 #: Generated HTML reports. Disposable: rebuildable from the registry at any time.
-#: Two sets and nothing else (ADR-045): `backtest/` and `forward/` each hold an index and
+#: One folder per lab, and nothing else (ADR-045, ADR-047). `backtest/` and `forward/`
+#: are the monthly roster on either side of the 2022 boundary and each holds an index and
 #: one page per algorithm. A page asked for on its own lands in `extra/`.
 REPORTS_DIR = PROJECT_ROOT / "reports"
 BACKTEST_REPORTS_DIR = REPORTS_DIR / "backtest"
 FORWARD_REPORTS_DIR = REPORTS_DIR / "forward"
+#: The calendar lab: the overnight/intraday decomposition and one page per calendar rule,
+#: each carrying BOTH windows, because the family is small enough that a rule's research
+#: and forward numbers are one story (ADR-047).
+TIMING_REPORTS_DIR = REPORTS_DIR / "timing"
 #: The genetic-algorithm lab: how the search works, what it may read, and what it found.
 #: Three pages, no index - each one links to the other two (ADR-046).
 GENETIC_REPORTS_DIR = REPORTS_DIR / "genetic_algorithm"

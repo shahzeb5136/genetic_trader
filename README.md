@@ -143,11 +143,15 @@ python -m sp500lab timing accept && python -m sp500lab timing suite
 ```
 
 ```bash
-python -m sp500lab evolve run --study ga-1 --generations 25 --population 60
+python -m sp500lab evolve run --study ga-1 --seeds 3
 ```
 
 ```bash
 python -m sp500lab experiments deflate ga-1
+```
+
+```bash
+python -m sp500lab evolve ensemble ga-1 --all-costs
 ```
 
 ```bash
@@ -279,23 +283,38 @@ python -m sp500lab report forward --open
 ```
 
 ```bash
+python -m sp500lab report timing --open
+```
+
+```bash
 python -m sp500lab report genetic --open
 ```
 
-Two folders of algorithm pages, and each holds exactly two kinds of file: an index with every algorithm's
-headline statistics — CAGR, volatility, Sharpe, drawdown, Sharpe against the index over
-its own window, the deflated Sharpe where a search produced it — and one self-contained
-page per algorithm. `reports/backtest/` is the research window; `reports/forward/` is
-2022 onward, prediction against outcome. Same roster in both: every built-in strategy,
-your `custom` group, and the winners of the top three genetic-algorithm searches. No
-server, no build step, no Python needed to read any of it — the folder is the deliverable
-([ADR-045](docs/DECISIONS.md)).
+**One folder per lab** ([ADR-047](docs/DECISIONS.md)). Two of them are the monthly roster
+on either side of the 2022 boundary, and each holds exactly two kinds of file: an index
+with every algorithm's headline statistics — CAGR, volatility, Sharpe, drawdown, Sharpe
+against the index over its own window, the deflated Sharpe where a search produced it —
+and one self-contained page per algorithm. `reports/backtest/` is the research window;
+`reports/forward/` is 2022 onward, prediction against outcome. Same roster in both: every
+built-in strategy, your `custom` group, and the winners of the top three genetic-algorithm
+searches. No server, no build step, no Python needed to read any of it — the folder is the
+deliverable ([ADR-045](docs/DECISIONS.md)).
 
-`reports/genetic_algorithm/` is a third, smaller set: three pages on the search itself —
-how it works, what it is allowed to read, and every search with its winning genome decoded
-into a table of weighted features, its fitness and diversity by generation, its deflated
-Sharpe and its forward verdict. It runs no search and no backtest; every figure comes off
-the checkpoints already on disk ([ADR-046](docs/DECISIONS.md)).
+`reports/timing/` is the calendar lab: an index — the leg engine's two identities, the
+overnight/intraday decomposition, every rule under all three cost settings, the per-ticker
+split — and one page per calendar rule carrying **both** windows, because nine rules is
+small enough that a rule's research numbers and its forward verdict are one story. Those
+rules are deliberately not on the roster above: they run on a different engine, one
+instrument, all-in or cash, and a rule that sits in cash 80% of the time would sort near
+the top of a scoreboard of fully invested stock pickers for a reason that is not skill.
+Each page leads with `entries` — the round trips the rule makes, counted off its own leg
+vectors — because that, not the session count, is the sample it rests on.
+
+`reports/genetic_algorithm/` is three pages on the search itself — how it works, what it
+is allowed to read, and every search with its winning genome decoded into a table of
+weighted features, its fitness and diversity by generation, its deflated Sharpe and its
+forward verdict. It runs no search and no backtest; every figure comes off the checkpoints
+already on disk ([ADR-046](docs/DECISIONS.md)).
 
 Each backtest page carries, in this order: **what it claims** (taken from the strategy's
 own docstring, so the report and the code cannot drift apart), the headline against the
@@ -311,14 +330,13 @@ column as a hand-written one without saying so would be the most misleading thin
 project could do.
 
 Everything else is still one command away and lands in `reports/extra/`, never inside
-the two sets:
+a set:
 
 ```bash
 python -m sp500lab report strategy quality_value --open   # just one
 python -m sp500lab report features --open                 # the 79 features, explained
 python -m sp500lab report algorithms --open  # the Algorithm Book: every competitor,
                                              # explained in its own words and scored
-python -m sp500lab report timing --open      # the Calendar Lab: overnight vs intraday
 ```
 
 ---
@@ -481,7 +499,7 @@ float precision at every session.
 ```bash
 python -m sp500lab timing accept && python -m sp500lab timing suite
 python -m sp500lab timing decompose          # per-ticker overnight/intraday split
-python -m sp500lab report timing --open      # the whole lab as one page
+python -m sp500lab report timing --open      # the whole lab: index + one page per rule
 ```
 
 The headline measurement, 2007-04 → 2021-12, gross: **SPY's overnight leg made 8.31%/yr
@@ -501,12 +519,34 @@ the monthly engine, twelve trades a year instead of five hundred.
 ## The genetic algorithm
 
 ```bash
-python -m sp500lab evolve run --study ga-1 --generations 25 --population 60
+python -m sp500lab evolve run --study ga-1 --seeds 3
+python -m sp500lab experiments deflate ga-1
+python -m sp500lab evolve ensemble ga-1 --all-costs
 ```
 
-1,400 distinct individuals in about five minutes — 0.15s per evaluation, because the panel
-is memoised, the feature ranks are precomputed once for the whole population, and each
-individual is one backtest whose folds are sliced from the resulting curve.
+About 0.1–0.2s per evaluation, because the panel is memoised, the feature ranks are
+precomputed once for the whole population, and each individual is one backtest whose
+sub-periods are sliced from the resulting curve — so a three-seed search of a few thousand
+distinct individuals is a quarter of an hour.
+
+**The search was redesigned on 2026-09-04** (ADR-048 to ADR-050), after the three
+searches below all cleared the deflated-Sharpe bar and all decayed out of sample. What
+runs now: the features with a prior story are grouped into **nine prior-signed families**
+(momentum, reversal, low risk, illiquidity, payout, value, quality, investment, earnings
+surprise) and an individual may back **at most three** of them, with one non-negative
+weight each — it picks which stories to back, never whether value means cheap-is-good.
+Fitness is the **25th percentile of twelve random 3–5-year sub-periods**, net of
+**pessimistic** costs, minus an explicit charge **per family, per feature and for the
+regime gate**. And what a search hands to the forward test is not its champion but the
+**average signal of its 30 best survivors** across three seeds. The first search over it,
+`ga-families-1` (4,179 distinct individuals, 20 minutes), converged on **quality plus low
+risk and nothing else** — all thirty members, gate off, 35 names — for **17.75%/yr at a
+1.15 Sharpe** under realistic costs against SPY's 15.66%/0.95 on 2010–2021, deflated
+0.992 over 4,180 trials. Forward-tested once, the same day: **5.73%/yr at a 0.46 Sharpe
+on 2022–2026 against the index's 13.52%/0.82 — decayed**, at all three cost settings,
+though with the drawdown halved and the turnover check held. Four searches, four decays.
+[EVOLUTION.md](docs/EVOLUTION.md) has the design and the numbers. The three earlier
+searches, kept because they are the reason:
 
 The first real search (`ga-price-1`) produced **12.40%/yr, Sharpe 1.15, −15.98% maximum
 drawdown** against SPY's 10.42% / 0.59 / −55.19% over the same window, and it survives
@@ -691,7 +731,7 @@ comes out of the stored record.
 | [FEATURES.md](docs/FEATURES.md) | The 79 point-in-time features, and the leakage test |
 | [STRATEGIES.md](docs/STRATEGIES.md) | The hypotheses — the twelve and the second wave — and the same-window scoreboard |
 | [TIMING.md](docs/TIMING.md) | The calendar lab: the leg engine, the overnight decomposition, nine rules |
-| [EVOLUTION.md](docs/EVOLUTION.md) | The genetic algorithm, and the four anti-overfitting defences |
+| [EVOLUTION.md](docs/EVOLUTION.md) | The genetic algorithm: nine prior-signed families, worst-quarter fitness, ensembles, and the five anti-overfitting defences |
 | [HOW_THE_GA_WORKS.md](docs/HOW_THE_GA_WORKS.md) | The GA in five minutes — one page for an executive, one for an engineer |
 | [TRADES.md](docs/TRADES.md) | Exporting every buy and sell, and the audit that ties it to the curve |
 | [HANDOFF.md](docs/HANDOFF.md) | Project state and the remaining TODO list |
@@ -726,9 +766,10 @@ These are measured, not guessed. Each is documented in full in `docs/`.
   correlates with survival. Any strategy needing them carries a survivorship bias *on top
   of* the price-coverage gap above, and runs on a shorter, kinder window. Every one of them
   is scored against the index over its own dates for exactly this reason.
-- **No true walk-forward yet.** GA fitness measures fold *consistency* inside the research
-  window, which is evidence of robustness and not of generalisation. A real walk-forward
-  re-runs the whole search inside each training window; it is the next thing to build.
+- **No true walk-forward yet.** GA fitness is the worst quarter of twelve random
+  sub-periods inside the research window, which is evidence of robustness and not of
+  generalisation. A real walk-forward re-runs the whole search inside each training
+  window; it is the next thing to build.
   The forward-test harness is not a substitute — it evaluates a *fixed* candidate after
   2022, where a walk-forward re-runs the *search* inside the research window. The two are
   complements, and the second is what should narrow the candidates before the first is
@@ -755,9 +796,9 @@ These are measured, not guessed. Each is documented in full in `docs/`.
 In order. Full specifications in [HANDOFF.md](docs/HANDOFF.md) §5b.
 
 1. **A true walk-forward harness.** Re-run the whole GA inside each training window and
-   evaluate its winner on the next, with a purge and an embargo. This is the only way to
-   get out-of-sample evidence without spending the holdout, and at 0.15s per evaluation it
-   costs about twenty minutes for five folds.
+   evaluate its ensemble on the next, with a purge and an embargo. This is the only way to
+   get out-of-sample evidence without spending the holdout, and at a quarter of an hour
+   per three-seed search it costs about an hour for five folds.
 2. **Let time pass, then re-test.** The holdout is spent — the whole roster went through
    `sp500lab forward` and the looks are in the ledger. The only untainted evidence left is
    the months that have not happened yet: `forward window` reports how many have accrued

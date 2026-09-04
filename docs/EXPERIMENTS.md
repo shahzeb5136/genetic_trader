@@ -343,8 +343,15 @@ search would add 10 MB of curves that no query reads. Re-running a winner with t
 is the **same trial** — the fingerprint does not include it — so nothing is lost:
 
 ```bash
-python -m sp500lab evolve best ga-1 --all-costs --trades results/trades/ga-1
+python -m sp500lab evolve ensemble ga-1 --all-costs --trades results/trades/ga-1
+python -m sp500lab evolve best ga-1 --all-costs
 ```
+
+**A multi-seed search is one study.** `evolve run --seeds 3` runs three populations under
+one study name, so `n_trials` counts every distinct individual any of them scored — which
+is the honest count, because the ensemble was picked from all of them. The ensemble itself
+is backtested once at the end of the search and logged into the same study as one more
+trial (ADR-050), so the deflated Sharpe of anything in the study counts it too.
 
 ### A worked example
 

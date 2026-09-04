@@ -266,6 +266,140 @@ def test_report_all_is_still_an_alias_for_the_backtest_set():
 
 
 # --------------------------------------------------------------------------
+# The calendar set (ADR-047)
+#
+# A separate folder because these rules are a separate engine: one instrument, all-in
+# or cash, on a fixed schedule. The tests here are about the two claims that separation
+# is FOR - that a calendar rule is never ranked as if it were a stock picker, and that
+# its sample size is its round trips rather than its sessions.
+# --------------------------------------------------------------------------
+
+class _FakeRule:
+    """A calendar rule with legs chosen by hand, so the counts can be done by eye."""
+
+    def __init__(self, overnight, intraday):
+        self._legs = (np.asarray(overnight, dtype=bool),
+                      np.asarray(intraday, dtype=bool))
+
+    def legs(self, data):
+        return self._legs
+
+
+def _schedule(overnight, intraday):
+    return Q.rule_schedule(_FakeRule(overnight, intraday), None, 0, len(overnight))
+
+
+def test_a_rule_that_re_enters_every_night_counts_every_night():
+    """Overnight-only: each night is separated by an unheld day, so entries = nights."""
+    sched = _schedule([True] * 4, [False] * 4)
+    assert sched["episodes"] == 4
+    assert sched["sessions"] == 4
+    assert sched["legs"] == "overnight only"
+
+
+def test_a_rule_that_holds_through_is_one_entry_not_many():
+    """The whole point of the column: four sessions held in a row is ONE observation."""
+    sched = _schedule([True, True, True, False], [True, True, True, True])
+    assert sched["episodes"] == 1
+    assert sched["sessions"] == 4
+
+
+def test_two_separate_holds_are_two_entries():
+    sched = _schedule([True, False, False, True, False],
+                      [True, True, False, True, True])
+    assert sched["episodes"] == 2
+
+
+def test_time_in_market_counts_half_sessions():
+    """An overnight rule owns half the clock. Reading it as 100% invited the wrong
+    comparison against buy-and-hold, which owns all of it."""
+    assert _schedule([True] * 10, [False] * 10)["exposure"] == pytest.approx(0.5)
+    assert _schedule([True] * 10, [True] * 10)["exposure"] == pytest.approx(1.0)
+
+
+def _rule(name, **kw):
+    base = {"name": name, "href": f"{name.replace('_', '-')}.html",
+            "claim": "Holds the market on some days and not others.",
+            "paragraphs": ["Holds the market on some days and not others."],
+            "explain": [], "exposure": "50%", "window": "2007-04–2021-12",
+            "schedule": {"sessions": 3715, "of_sessions": 3715, "exposure": 0.5,
+                         "episodes": 3715, "legs": "overnight only"},
+            "settings": {c: {"cagr": 0.05, "sharpe": 0.5, "maxdd": -0.2,
+                             "turnover": None, "cost_drag": 0.01}
+                         for c in ("optimistic", "realistic", "pessimistic")},
+            "forward": None, "is_benchmark": False, "d_sharpe": 0.1}
+    return base | kw
+
+
+def test_the_benchmark_is_the_bar_and_is_never_ranked_against_itself():
+    from sp500lab.reporting.timing_views import _ranked
+
+    rules = [_rule("tm_weekend", d_sharpe=-0.5),
+             _rule("tm_buy_hold", is_benchmark=True, d_sharpe=0.0),
+             _rule("tm_overnight", d_sharpe=0.1)]
+    assert [r["name"] for r in _ranked(rules)] == ["tm_buy_hold", "tm_overnight",
+                                                   "tm_weekend"]
+
+
+def test_every_rule_card_links_to_the_page_the_set_writes():
+    """The index and the pages are written by different loops and must agree."""
+    from sp500lab.reporting.specs import LinkGrid
+    from sp500lab.reporting.timing_views import _rules_section
+
+    rules = [_rule("tm_overnight"), _rule("tm_weekend")]
+    grid = next(b for b in _rules_section(rules).blocks if isinstance(b, LinkGrid))
+    assert {c.href for c in grid.cards} == {"tm-overnight.html", "tm-weekend.html"}
+    assert all(c.blurb for c in grid.cards)
+
+
+def test_a_rule_page_says_its_sample_is_entries_not_sessions():
+    from sp500lab.reporting.timing_views import _entries_note
+
+    long_holds = _entries_note(_rule("tm_sell_in_may"), 16, 1806, 14.7)
+    assert "16 entries" in long_holds.text and "1,806 sessions" in long_holds.text
+    assert long_holds.level == "warn", "a 16-event sample has to be flagged, not noted"
+
+    # A rule whose entries and sessions coincide must NOT claim they differ.
+    nightly = _entries_note(_rule("tm_overnight"), 3715, 3715, 14.7)
+    assert "is not the" not in nightly.text
+
+
+def test_a_rule_with_no_forward_record_says_so_rather_than_going_quiet():
+    from sp500lab.reporting.specs import Note
+    from sp500lab.reporting.timing_views import _rule_forward
+
+    sections = _rule_forward(_rule("tm_overnight"), None)
+    assert len(sections) == 1
+    note = next(b for b in sections[0].blocks if isinstance(b, Note))
+    assert note.level == "warn"
+    assert "never sealed" in note.text or "Never tested" in note.title
+
+
+def test_the_forward_index_points_at_the_set_that_does_show_the_calendar_rules():
+    """Naming nine hidden candidates without saying where they are was the bug."""
+    from sp500lab.reporting.forward_views import _hidden_note
+
+    note = _hidden_note(["tm_overnight", "tm_weekend"], "../timing/index.html")
+    assert "tm_overnight" in note.text
+    assert "../timing/index.html" in note.text
+    assert "multiple-testing bar" in note.text, "a hidden candidate still counts"
+    assert _hidden_note([], "../timing/index.html") is None
+
+
+def test_a_calendar_rule_is_never_rendered_with_an_empty_claim():
+    """`report forward` can be handed a tm_ record; a blank claim would be a silent lie
+    about a strategy that has a perfectly good docstring."""
+    assert "market is closed" in Q.claim_for("tm_overnight").lower()
+    assert Q.claim_for("no_such_strategy_at_all") == ""
+
+
+def test_the_calendar_rules_are_not_on_the_monthly_roster():
+    """If they ever are, they get sorted into a scoreboard of stock pickers."""
+    names = set(Q.roster("all"))
+    assert not [n for n in names if n.startswith("tm_")]
+
+
+# --------------------------------------------------------------------------
 # Real data
 # --------------------------------------------------------------------------
 
@@ -299,7 +433,8 @@ def test_the_backtest_folder_holds_an_index_and_one_page_per_algorithm(tmp_path)
     rc = main(["report", "backtest", "cash,equal_weight", "--start", "2015-01-01",
                "--no-log", "--no-evolved", "-o", str(out)])
     assert rc == 0
-    assert sorted(p.name for p in out.iterdir()) ==         ["cash.html", "equal-weight.html", "index.html"]
+    assert sorted(p.name for p in out.iterdir()) == ["cash.html", "equal-weight.html",
+                                                     "index.html"]
     index = (out / "index.html").read_text(encoding="utf-8")
     assert 'href="cash.html"' in index and 'href="equal-weight.html"' in index
 
@@ -324,6 +459,58 @@ def test_a_strategy_report_carries_the_strategy_s_own_words():
                     if isinstance(b, Note))
     assert "volatility" in body.lower()
     assert "coverage" in body.lower(), "coverage must travel with the numbers"
+
+
+@needs_data
+def test_the_timing_folder_holds_an_index_and_one_page_per_calendar_rule(tmp_path):
+    """The ADR-047 shape, and the link between the two kinds of file."""
+    from sp500lab.cli import main
+    from sp500lab.timing.strategies import TIMING_GROUPS
+
+    out = tmp_path / "cal"
+    assert main(["report", "timing", "-o", str(out)]) == 0
+    written = sorted(p.name for p in out.iterdir())
+    expected = sorted(["index.html"]
+                      + [f"{n.replace('_', '-')}.html" for n in TIMING_GROUPS["all"]])
+    assert written == expected
+
+    index = (out / "index.html").read_text(encoding="utf-8")
+    for name in TIMING_GROUPS["all"]:
+        assert f'href="{name.replace("_", "-")}.html"' in index, name
+
+
+@needs_data
+def test_a_calendar_rule_page_carries_both_windows_on_one_page():
+    """The reason this is a set and not two: a rule's research and forward numbers are
+    one story, and `tm_weekend`'s story is that the second refuted the first."""
+    from sp500lab.reporting.cli import calendar_lab_pages
+
+    _, pages = calendar_lab_pages()
+    by_name = {name: report for name, _, report in pages}
+    report = by_name["tm_weekend"]
+    titles = [s.title for s in report.sections]
+    assert "The research window" in titles
+    assert "Out of sample: 2022 onward" in titles
+    assert "Prediction against outcome" in titles, "reused from the forward set"
+    assert titles[-2] == "What would make you distrust this"
+    assert "FAILED" in report.subtitle
+
+
+@needs_data
+def test_the_entries_column_reproduces_the_documented_sample_sizes():
+    """docs/TIMING.md's `independent sample` column is prose. This is where it comes
+    from, and the two must not drift: sell-in-May is ~15 cycles, not ~1,800 sessions."""
+    from sp500lab.reporting.cli import calendar_lab_pages
+
+    index, _ = calendar_lab_pages()
+    table = next(b for s in index.sections for b in s.blocks
+                 if isinstance(b, TableBlock) and "entries" in b.table.columns).table
+    col = table.columns.index("entries")
+    counts = {r[0].text: int(r[col].text.replace(",", "")) for r in table.rows}
+    assert 3_500 < counts["tm_overnight"] < 3_900
+    assert 700 < counts["tm_weekend"] < 800
+    assert 150 < counts["tm_turn_of_month"] < 200
+    assert counts["tm_sell_in_may"] < 25
 
 
 @needs_data

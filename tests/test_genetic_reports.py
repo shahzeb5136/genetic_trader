@@ -66,9 +66,69 @@ def _search(study="ga-demo", preset="price", *, forward=None, dsr=0.99,
                       "expected_max_sharpe_annualised": 0.64},
         "research": {"cagr": 0.124, "sharpe": 1.155, "maxdd": -0.16, "turnover": 3.5,
                      "cost_drag": 0.006},
+        "champion_research": {"cagr": 0.124, "sharpe": 1.155, "maxdd": -0.16,
+                              "turnover": 3.5, "cost_drag": 0.006},
         "window": "2007-04 → 2021-12",
         "forward": forward,
+        # The 2026-09 additions. A feature-preset search predates families and
+        # ensembles, so it carries the empty forms of both.
+        "kind": "features",
+        "objective": {"metric": "sharpe_monthly", "costs": "realistic",
+                      "fold_scheme": "contiguous", "n_folds": 4,
+                      "aggregate": "mean_minus_std", "quantile": None,
+                      "dispersion_weight": 0.5, "turnover_penalty": 0.03,
+                      "complexity_penalty": 0.01, "family_penalty": 0.0,
+                      "gate_penalty": 0.0, "n_seeds": 1, "ensemble_size": 0},
+        "seeds": [11],
+        "n_individuals": n_trials,
+        "families": [],
+        "family_usage": {},
+        "deliverable": f"{study}-best",
+        "ensemble": None,
     }
+
+
+def _family_search(study="ga-fam", *, ensemble_forward=None) -> dict:
+    """A search over the `families` preset with a stored ensemble, as the lab reads it."""
+    s = _search(study, "families", forward=None, dsr=0.97, n_trials=4200)
+    s["kind"] = "families"
+    s["objective"] = {"metric": "sharpe_monthly", "costs": "pessimistic",
+                      "fold_scheme": "random", "n_folds": 12, "fold_min_years": 3.0,
+                      "fold_max_years": 5.0, "aggregate": "quantile", "quantile": 0.25,
+                      "dispersion_weight": 0.5, "turnover_penalty": 0.03,
+                      "complexity_penalty": 0.01, "family_penalty": 0.02,
+                      "gate_penalty": 0.03, "n_seeds": 3, "ensemble_size": 30}
+    s["seeds"] = [0, 1, 2]
+    h = pd.concat([_history().assign(seed=k) for k in (0, 1, 2)], ignore_index=True)
+    s["history"] = h
+    s["families"] = [("quality", 0.9), ("low_risk", 0.6)]
+    s["family_usage"] = {"quality": 55, "low_risk": 40, "momentum": 12}
+    s["weights"] = [("gross_profitability", 0.9), ("roe", 0.9), ("accruals", -0.9),
+                    ("leverage", -0.9), ("vol_126d", -0.6), ("idio_vol_252d", -0.6),
+                    ("beta_252d", -0.6), ("max_ret_21d", -0.6)]
+    s["n_ignored"] = 13
+    s["usage"] = {"gross_profitability": 55, "vol_126d": 40, "mom_12_1": 12}
+    s["deliverable"] = f"{study}-ensemble"
+    s["ensemble"] = {
+        "name": f"{study}-ensemble", "size": 30, "seeds": [0, 1, 2],
+        "built_at": "2026-09-04T12:00:00Z",
+        "family_usage": {"quality": 24, "low_risk": 18, "momentum": 9, "payout": 3},
+        "feature_usage": {"gross_profitability": 24, "vol_126d": 18},
+        "construction": {"top_k": 42, "weighting": "equal", "max_weight": 0.06,
+                         "min_names": 10, "gross": 1.0, "long_only": True},
+        "prose": "Averages the signals of 30 evolved individuals.",
+        "evaluation": {"fitness": 0.71, "sharpe": 1.05, "cagr": 0.151,
+                       "max_drawdown": -0.29, "turnover": 2.1, "costs": "pessimistic"},
+        "member_fitness": {"best": 0.78, "worst": 0.66},
+        "champion_fitness": 0.78,
+        "research": {"cagr": 0.158, "sharpe": 1.12, "maxdd": -0.28, "turnover": 2.1,
+                     "cost_drag": 0.004},
+        "deflation": {"n_trials": 4200, "deflated_sharpe": 0.97, "trial_sharpe_std": 0.2,
+                      "n_months": 137, "sharpe_annualised_monthly": 1.3,
+                      "expected_max_sharpe_annualised": 0.75},
+        "forward": ensemble_forward,
+    }
+    return s
 
 
 DECAYED = {"verdict": "decayed", "research_sharpe": 1.15, "forward_sharpe": 0.19,
@@ -114,13 +174,18 @@ def _tables(report) -> list:
 
 def test_the_genome_anatomy_is_read_off_the_real_genome():
     """If the search space changes, the methodology page must change with it."""
-    from sp500lab.strategies.genome import DEAD_ZONE, PRESETS, alpha_genome
+    from sp500lab.strategies.genome import (DEAD_ZONE, FAMILY_PRESETS, all_presets,
+                                            alpha_genome)
 
     g = _genome()
     assert g["dead_zone"] == DEAD_ZONE
-    assert set(g["sizes"]) == set(PRESETS)
-    for preset in PRESETS:
+    assert set(g["sizes"]) == set(all_presets())
+    for preset in all_presets():
         assert g["sizes"][preset] == len(alpha_genome(preset))
+    assert g["kinds"]["families"] == "families" and g["kinds"]["price"] == "features"
+    assert g["caps"] == {n: fp.max_active for n, fp in FAMILY_PRESETS.items()}
+    assert g["n_families"]["families"] == 9 and g["n_families"]["price"] == 0
+    assert g["defaults"]["preset"] == "families"
     names = {gene["name"] for gene in g["shape_genes"]}
     assert names == {"top_k", "max_weight", "weighting", "use_regime",
                      "defensive_gross", "vol_trigger"}
@@ -366,5 +431,139 @@ def test_the_lab_reads_real_checkpoints_without_running_a_search():
         assert s["preset"] in lab["presets"]
         assert len(s["history"]) > 0
         assert s["n_population"] > 0
+        assert s["kind"] in ("features", "families")
+        assert s["objective"]["fold_scheme"] in ("contiguous", "random")
         # Every active weight is outside the dead zone, by construction.
         assert all(abs(w) >= lab["genome"]["dead_zone"] for _, w in s["weights"])
+        if s["ensemble"]:
+            assert s["deliverable"] == s["ensemble"]["name"]
+            assert s["ensemble"]["size"] == len(s["ensemble"]["family_usage"]) or \
+                s["ensemble"]["size"] >= max(s["ensemble"]["family_usage"].values())
+    assert len(lab["families"]) == 9
+    assert set(lab["family_presets"]) == {"families", "families-price"}
+    assert lab["cut"] and all(names for _, names in lab["cut"])
+
+
+# --------------------------------------------------------------------------
+# The 2026-09 redesign: families, the robust objective, the ensembles
+# --------------------------------------------------------------------------
+
+def _lab_kwargs() -> dict:
+    """The family material the features page takes, read off the real genome."""
+    from sp500lab.strategies.genome import (CUT_FEATURES, FAMILIES, FAMILY_PRESETS,
+                                            PRESET_MIN_DATE, all_presets, preset_kind)
+    return {
+        "families": [{"name": f.name, "label": f.label, "story": f.story,
+                      "reference": f.reference, "members": list(f.members),
+                      "presets": [n for n, fp in FAMILY_PRESETS.items()
+                                  if f.name in fp.families]} for f in FAMILIES],
+        "family_presets": {n: {"families": list(fp.families),
+                               "max_active": fp.max_active, "min_date": fp.min_date,
+                               "note": fp.note} for n, fp in FAMILY_PRESETS.items()},
+        "cut": [(r, list(names)) for r, names in CUT_FEATURES],
+        "min_dates": dict(PRESET_MIN_DATE),
+        "preset_kinds": {n: preset_kind(n) for n in all_presets()},
+    }
+
+
+def test_the_features_page_tells_every_family_story_with_its_signs():
+    report = GV.features_report({"families": ("mom_12_1",)}, [], _catalog,
+                                hrefs=_hrefs(), **_lab_kwargs())
+    table = next(t for t in _tables(report) if t.columns[0] == "family")
+    labels = [row[0].text for row in table.rows]
+    assert len(labels) == 9 and "Quality" in labels and "Low risk" in labels
+    members = {row[0].text: row[2].text for row in table.rows}
+    assert "−vol_126d" in members["Low risk"]
+    assert "+gross_profitability" in members["Quality"] and "−accruals" in members["Quality"]
+    text = _text(report)
+    assert "at most 3" in text.lower() or "At most 3" in text
+    assert "What was cut, and why" in text
+
+
+def test_the_features_page_says_what_was_cut_and_why():
+    report = GV.features_report({"families": ("mom_12_1",)}, [], _catalog,
+                                hrefs=_hrefs(), **_lab_kwargs())
+    cut = next(t for t in _tables(report) if t.columns == ["reason", "features", "which"])
+    listed = " ".join(row[2].text for row in cut.rows)
+    assert "mom_on_12_1" in listed and "restatement_rate" in listed
+    assert "log_market_cap" in listed
+
+
+def test_the_features_page_reports_family_convergence_for_a_family_search():
+    s = _family_search()
+    report = GV.features_report({"families": ("vol_126d",)}, [s], _catalog,
+                                hrefs=_hrefs(), **_lab_kwargs())
+    table = next(t for t in _tables(report) if t.columns[0] == "family"
+                 and "champion" in t.columns[1])
+    by_name = {row[0].text: row for row in table.rows}
+    assert by_name["Quality"][1].text == "0.90"
+    assert by_name["Quality"][2].text == "91.67%"          # 55 of 60
+    assert by_name["Momentum"][1].text == "not backed"
+
+
+def test_the_methodology_page_lists_five_defences_and_the_ensemble():
+    report = GV.methodology_report(_genome(), [_family_search()], hrefs=_hrefs())
+    text = _text(report)
+    assert "5." in text and "ensemble, not the champion" in text
+    assert "worst quarter" in text.lower()
+    assert "costs inside the fitness" in text
+    assert "What a search hands on" in text
+    assert "1 of 1 searches on disk built an ensemble" in text
+
+
+def test_the_methodology_page_names_the_objective_defaults():
+    report = GV.methodology_report(_genome(), [], hrefs=_hrefs())
+    stats = [s for sec in report.sections for b in sec.blocks
+             if isinstance(b, StatRow) for s in b.stats]
+    by_label = {s.label: s for s in stats}
+    assert by_label["charged at"].value == "pessimistic"
+    assert by_label["aggregate"].value == "quantile"
+    assert by_label["sub-periods"].value == "12"
+    assert "random" in by_label["sub-periods"].note
+
+
+def test_a_searches_page_shows_the_ensemble_beside_the_champion():
+    s = _family_search(ensemble_forward=DECAYED)
+    report = GV.searches_report([s], [], hrefs=_hrefs())
+    titles = [sec.title for sec in report.sections]
+    assert "ga-fam: the champion" in titles
+    assert "ga-fam: the ensemble it hands on" in titles
+    text = _text(report)
+    assert "ensemble of 30" in text
+    assert "pooled across 3 seeds" in text
+    # The headline verdict is the ENSEMBLE's, because that is what was tested.
+    headline = next(t for t in _tables(report) if "hands on" in t.columns)
+    row = headline.rows[0]
+    assert row[2].text == "ensemble of 30"
+    assert row[-1].text == "DECAYED"
+
+
+def test_an_untested_ensemble_says_so():
+    report = GV.searches_report([_family_search()], [], hrefs=_hrefs())
+    assert "This ensemble has not been forward-tested." in _text(report)
+
+
+def test_the_settings_table_carries_the_objective():
+    report = GV.searches_report([_search(), _family_search()], [], hrefs=_hrefs())
+    table = next(t for t in _tables(report) if t.columns[0] == "")
+    rows = {row[0].text: [c.text for c in row[1:]] for row in table.rows}
+    assert rows["sub-periods"] == ["contiguous", "random"]
+    assert rows["aggregate"] == ["mean_minus_std", "quantile"]
+    assert rows["charged at"] == ["realistic", "pessimistic"]
+    assert rows["seeds run"] == ["1", "3"]
+    assert rows["ensemble size"][1] == "30"
+
+
+def test_a_pooled_search_draws_one_training_line_per_seed():
+    report = GV.searches_report([_family_search()], [], hrefs=_hrefs())
+    chart = next(b for sec in report.sections for b in sec.blocks
+                 if isinstance(b, LineChart) and b.title == "Best fitness by generation")
+    assert [ser.name for ser in chart.series] == ["ga-fam s0", "ga-fam s1", "ga-fam s2"]
+    assert all(len(ser) == 10 for ser in chart.series)
+
+
+def test_decay_is_counted_on_whatever_the_search_handed_over():
+    searches = [_search("a", forward=DECAYED), _family_search("b", ensemble_forward=DECAYED),
+                _family_search("c")]
+    report = GV.methodology_report(_genome(), searches, hrefs=_hrefs())
+    assert "2 of 2 winners tested out of sample DECAYED" in _text(report)

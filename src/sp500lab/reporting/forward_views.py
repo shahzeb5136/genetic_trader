@@ -362,13 +362,14 @@ def primary_rows(records: pd.DataFrame, cost_model: str = PRIMARY_COSTS) -> pd.D
 
 def forward_index_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_COSTS,
                          extra_cards: list[dict] | None = None,
-                         roster: list[str] | None = None) -> Report:
+                         roster: list[str] | None = None,
+                         hidden_href: str | None = None) -> Report:
     """The landing page: what survived 2022-2026, and how much that is worth knowing.
 
     `roster` restricts the candidates SHOWN, not the candidates COUNTED. The
     multiple-testing bar and the honesty section are computed over every record, and the
     page names what it leaves out - a candidate that was looked at counts whether or not
-    it has a page.
+    it has a page. `hidden_href` is where the calendar rules among them can be read.
     """
     rows = primary_rows(records, cost_model)
     hidden: list[str] = []
@@ -403,7 +404,7 @@ def forward_index_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_COS
     head.add(_control_note(rows))
     head.add(_power_note(months))
     head.add(_selection_note(bar))
-    head.add(_hidden_note(hidden))
+    head.add(_hidden_note(hidden, hidden_href))
     head.add(_seal_note(rows))
     report.add(head)
 
@@ -454,17 +455,26 @@ def forward_index_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_COS
     return report
 
 
-def _hidden_note(hidden: list[str]) -> Note | None:
-    """Name the tested candidates this page does not show. Silence would misstate N."""
+def _hidden_note(hidden: list[str], timing_href: str | None = None) -> Note | None:
+    """Name the tested candidates this page does not show, and say where they are.
+
+    Silence would misstate N. Naming them without a link was almost as bad: the calendar
+    rules are most of this list, they have a set of their own since ADR-047, and a reader
+    who has just been told nine candidates exist should not have to go looking.
+    """
     if not hidden:
         return None
-    return Note(
+    calendar = [n for n in hidden if n.startswith("tm_")]
+    text = (
         f"{len(hidden)} further candidate(s) were forward-tested and are not on this "
         "page because they are outside the roster this set is built from: "
         + ", ".join(hidden) + ". Every one of them still counts toward the "
         "multiple-testing bar above, because it was looked at. Their records are in "
-        "the store and in the holdout ledger.",
-        level="info", title="Not everything tested is shown.")
+        "the store and in the holdout ledger.")
+    if calendar and timing_href:
+        text += (f" The {len(calendar)} calendar rules have their own set, which carries "
+                 f"both windows on one page each: {timing_href}")
+    return Note(text, level="info", title="Not everything tested is shown.")
 
 
 def _headline_prose(rows: pd.DataFrame, cost_model: str) -> str:
@@ -612,6 +622,25 @@ def forward_strategy_report(records: pd.DataFrame, *, cost_model: str = PRIMARY_
     report.add(_cost_section(rows))
     report.add(_provenance_section(record, trades_csv))
     return report
+
+
+def outcome_sections(record, comparison, rows: pd.DataFrame) -> list[Section]:
+    """The prediction-against-outcome half of a candidate page, as sections.
+
+    Public because the calendar set shows both windows of a rule on ONE page (ADR-047)
+    and had to be able to render its forward half without a second implementation of the
+    paired comparison, the significance arithmetic and the nine checks. A forward table
+    that is computed twice is a forward table that will eventually disagree with itself,
+    and the disagreement would be invisible: both copies would look plausible.
+
+    Takes the same three objects `forward_strategy_report` works from - the stored
+    record, its comparison, and one row per cost setting.
+    """
+    return [_paired_section(record, comparison),
+            _curve_section(record),
+            _significance_section(record, comparison),
+            _checks_section(comparison),
+            _cost_section(rows)]
 
 
 def _claim_section(record, claim: str, index_href: str) -> Section:

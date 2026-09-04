@@ -21,6 +21,17 @@ economic reading, and the blend is a weighted sum of z-scored signals rather tha
 arbitrary expression tree. That is a deliberate trade: less expressive, far less prone to
 discovering noise.
 
+Four strategy classes, in the order they arrived
+-------------------------------------------------
+    EvolvedBlend      four indicators recomputed inside score(); the first substrate
+    EvolvedAlpha      weighted ranked FEATURES from the shared panel; presets price/full/night
+    EvolvedFamilies   weighted prior-signed FAMILY composites, capped (ADR-048)
+    EvolvedEnsemble   the average signal of the N best individuals of a search (ADR-050)
+
+`from_vector()` turns a vector into whichever of the middle two its preset calls for, and
+`EvolvedEnsemble` is built from a list of those. The engine cannot tell any of them from a
+hand-written strategy, which is the point.
+
 Read docs/HANDOFF.md section 6 before running a search. In particular: log every
 individual evaluated, not just the winners. `metrics.deflate_result()` needs the trial
 count and the spread of trial Sharpes, and without them the winner's Sharpe is not
@@ -29,15 +40,16 @@ conservative or optimistic — it is meaningless.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from ..backtest.context import Context
 from ..backtest.portfolio import Construction, build_weights
 from ..backtest.strategy import FeatureStrategy, SignalStrategy, register
-from .genome import (DEAD_ZONE, PRESET_MIN_DATE, PRESETS, REGIME_FEATURES,
-                     alpha_genome, describe_genome)
+from .genome import (DEAD_ZONE, FAMILY_BY_NAME, PRESET_MIN_DATE, PRESETS,
+                     REGIME_FEATURES, alpha_genome, describe_genome, preset_families,
+                     preset_features, preset_kind)
 from .signals import rank_pct
 
 
@@ -267,6 +279,9 @@ class EvolvedAlpha(FeatureStrategy):
     RANK_SUFFIX = "__rank"
 
     def __init__(self, preset: str = "price", pre_ranked: bool = False, **params):
+        if preset not in PRESETS:
+            raise KeyError(f"{type(self).__name__} takes a feature preset, one of "
+                           f"{tuple(PRESETS)}; got {preset!r}")
         genome = alpha_genome(preset)
         defaults = genome.decode(np.zeros(len(genome)))
         merged = {**defaults, **{k: v for k, v in params.items()
@@ -282,13 +297,18 @@ class EvolvedAlpha(FeatureStrategy):
         # every rebalance re-derives the same mask 232 times per fitness evaluation.
         self._weights[np.abs(self._weights) < DEAD_ZONE] = 0.0
         self._used = np.flatnonzero(self._weights != 0.0)
+        self._wire(preset, pre_ranked, self._features)
 
-        # Pre-ranked columns carry a different NAME, not just different values, so a
-        # strategy handed the wrong panel fails at the first rebalance instead of
-        # quietly summing raw book-to-market ratios as if they were ranks.
+    def _wire(self, preset: str, pre_ranked: bool, features: tuple[str, ...]) -> None:
+        """Everything the engine needs to know, shared by the feature and family forms.
+
+        Pre-ranked columns carry a different NAME, not just different values, so a
+        strategy handed the wrong panel fails at the first rebalance instead of
+        quietly summing raw book-to-market ratios as if they were ranks.
+        """
         self.pre_ranked = bool(pre_ranked)
         self._columns = tuple(f"{f}{self.RANK_SUFFIX}" if self.pre_ranked else f
-                              for f in self._features)
+                              for f in features)
         self._defensive_column = ("vol_126d" + self.RANK_SUFFIX if self.pre_ranked
                                   else "vol_126d")
         needed = list(self._columns) + list(REGIME_FEATURES) + [self._defensive_column]
@@ -311,6 +331,11 @@ class EvolvedAlpha(FeatureStrategy):
     @property
     def active_features(self) -> list[str]:
         return [self._features[i] for i in self._used]
+
+    @property
+    def has_opinion(self) -> bool:
+        """False when every signal weight is inside the dead zone."""
+        return bool(len(self._used))
 
     def _col(self, ctx: Context, name: str) -> np.ndarray:
         if self._cols is None:
@@ -337,25 +362,33 @@ class EvolvedAlpha(FeatureStrategy):
         return ((np.isfinite(trend) and trend < 0.0)
                 or (np.isfinite(ratio) and ratio > float(self.params["vol_trigger"])))
 
-    def score(self, ctx: Context) -> np.ndarray:
+    def defensive_score(self, ctx: Context) -> np.ndarray:
+        """What the individual holds when it does not want to act on its belief.
+
+        Defensive months rank on low volatility rather than on the evolved score. Ranks
+        are a monotone transform, so ranking a rank is the identity - the negation still
+        has to happen, because low volatility is the good end.
+        """
+        elig = ctx.tradable
+        vol = self._col(ctx, self._defensive_column)
+        return rank_pct(-vol, elig) if not self.pre_ranked else np.where(
+            elig & np.isfinite(vol), 1.0 - vol, np.nan)
+
+    def alpha(self, ctx: Context) -> np.ndarray:
+        """The individual's belief, gate ignored: the weighted sum of ranks.
+
+        Public because an ensemble averages beliefs, not portfolios (ADR-050): it wants
+        every member's opinion on every date, including the dates a member would itself
+        have stepped aside on.
+        """
         elig = ctx.tradable
         n = ctx.close.shape[1]
-        if not len(self._used) or elig.sum() < 10:
+        if not self.has_opinion or elig.sum() < 10:
             # An individual with every weight inside the dead zone has no opinion about
             # anything. It scores NaN and holds cash, rather than falling through to the
             # tie-break and collecting the survivors - which is exactly the failure that
             # made a zero-signal strategy post 17.65%/yr in ADR-024.
             return np.full(n, np.nan)
-
-        if self.is_defensive(ctx):
-            # Defensive months rank on low volatility rather than on the evolved score.
-            # The score is what the individual believes; this is what it does when it
-            # does not want to act on that belief.
-            vol = self._col(ctx, self._defensive_column)
-            # Ranks are a monotone transform, so ranking a rank is the identity - the
-            # negation still has to happen, because low volatility is the good end.
-            return rank_pct(-vol, elig) if not self.pre_ranked else np.where(
-                elig & np.isfinite(vol), 1.0 - vol, np.nan)
 
         total = np.zeros(n, dtype=np.float64)
         present = np.zeros(n, dtype=np.float64)
@@ -370,8 +403,17 @@ class EvolvedAlpha(FeatureStrategy):
             out = total / present
         return np.where((present > 0) & np.isfinite(out), out, np.nan)
 
+    def score(self, ctx: Context) -> np.ndarray:
+        elig = ctx.tradable
+        if not self.has_opinion or elig.sum() < 10:
+            return np.full(ctx.close.shape[1], np.nan)
+        if self.is_defensive(ctx):
+            # The score is what the individual believes; this is what it does when it
+            # does not want to act on that belief.
+            return self.defensive_score(ctx)
+        return self.alpha(ctx)
+
     def target_weights(self, ctx: Context) -> np.ndarray:
-        from dataclasses import replace
         c = self.construction
         if self.is_defensive(ctx):
             c = replace(c, gross=float(self.params["defensive_gross"]))
@@ -387,7 +429,7 @@ class EvolvedAlpha(FeatureStrategy):
         # same hypothesis count as two trials and over-deflate the winner.
         d["pre_ranked"] = self.pre_ranked
         d["active_features"] = self.active_features
-        d["n_active"] = len(self._used)
+        d["n_active"] = len(self.active_features)
         return d
 
     def explain(self) -> str:
@@ -395,9 +437,297 @@ class EvolvedAlpha(FeatureStrategy):
         return describe_genome(self._genome, self._genome.encode(self.params))
 
 
+# --------------------------------------------------------------------------
+# EvolvedFamilies - the capped, prior-signed search space (ADR-048)
+# --------------------------------------------------------------------------
+
+@register("evolved_families")
+class EvolvedFamilies(EvolvedAlpha):
+    """A weighted blend of prior-signed FAMILY composites, at most a few at a time.
+
+    Same engine contract as `EvolvedAlpha`, a much smaller space. Each family is a fixed
+    story - momentum, low risk, value, quality, ... - told by a handful of features whose
+    direction the literature already settled, and the composite is the plain mean of
+    those prior-signed percentile ranks over whichever members a name has a value for.
+    The genome carries one NON-NEGATIVE weight per family and the preset caps how many
+    may be live, so an individual reads as "back these three stories, in these
+    proportions". It cannot rank value backwards and it cannot back all nine at once.
+
+        family_k(name) = mean over members of  rank       (prior says high is good)
+                                            or 1 - rank   (prior says low is good)
+        score(name)    = sum_k w_k * family_k(name) / sum_k w_k   over present families
+
+    The `1 - rank` form rather than a negative weight, deliberately: every term stays in
+    [0, 1], so a name missing a member is scored as average on it rather than being
+    quietly rewarded for having no value on a feature whose low end is good.
+
+    Instantiate from a vector:
+
+        g = alpha_genome("families")
+        EvolvedFamilies(preset="families", **g.decode(vector))
+    """
+
+    name = "evolved_families"
+
+    def __init__(self, preset: str = "families", pre_ranked: bool = False, **params):
+        if preset_kind(preset) != "families":
+            raise KeyError(f"{type(self).__name__} takes a family preset; got {preset!r}")
+        genome = alpha_genome(preset)
+        defaults = genome.decode(np.zeros(len(genome)))
+        merged = {**defaults, **{k: v for k, v in params.items()
+                                 if k in set(genome.names)}}
+        decoded = genome.decode(genome.encode(merged))
+        FeatureStrategy.__init__(self, preset=preset, **decoded)
+
+        self._genome = genome
+        self._families = preset_families(preset)
+        self._family_weights = np.array(
+            [float(self.params[f"f_{fam.name}"]) for fam in self._families],
+            dtype=np.float64)
+        # decode() already zeroed the dead zone and everything past the cap.
+        self._live = [i for i, w in enumerate(self._family_weights) if w > 0.0]
+        self._features = preset_features(preset)
+        self._feature_index = {f: i for i, f in enumerate(self._features)}
+        self._used = np.array(sorted({self._feature_index[f] for i in self._live
+                                      for f in self._families[i].features}), dtype=int)
+        self._wire(preset, pre_ranked, self._features)
+
+    @property
+    def active_families(self) -> list[str]:
+        return [self._families[i].name for i in self._live]
+
+    @property
+    def family_weights(self) -> list[tuple[str, float]]:
+        out = [(self._families[i].name, float(self._family_weights[i]))
+               for i in self._live]
+        out.sort(key=lambda kv: -kv[1])
+        return out
+
+    @property
+    def has_opinion(self) -> bool:
+        return bool(self._live)
+
+    def alpha(self, ctx: Context) -> np.ndarray:
+        elig = ctx.tradable
+        n = ctx.close.shape[1]
+        if not self.has_opinion or elig.sum() < 10:
+            return np.full(n, np.nan)
+
+        total = np.zeros(n, dtype=np.float64)
+        present = np.zeros(n, dtype=np.float64)
+        for i in self._live:
+            w = self._family_weights[i]
+            comp = np.zeros(n, dtype=np.float64)
+            cnt = np.zeros(n, dtype=np.float64)
+            for feature, sign in self._families[i].members:
+                col = self._col(ctx, self._columns[self._feature_index[feature]])
+                r = col if self.pre_ranked else rank_pct(col, elig)
+                ok = np.isfinite(r) & elig
+                comp[ok] += r[ok] if sign > 0 else 1.0 - r[ok]
+                cnt[ok] += 1.0
+            has = cnt > 0
+            total[has] += w * comp[has] / cnt[has]
+            present[has] += w
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = total / present
+        return np.where((present > 0) & np.isfinite(out), out, np.nan)
+
+    def describe(self) -> dict:
+        d = super().describe()
+        d["active_families"] = self.active_families
+        d["n_families"] = len(self._live)
+        return d
+
+
 def from_vector(vector, preset: str = "price",
                 pre_ranked: bool = False) -> EvolvedAlpha:
-    """The GA's constructor: a float vector in, a scorable strategy out."""
+    """The GA's constructor: a float vector in, a scorable strategy out.
+
+    A feature preset becomes an `EvolvedAlpha`, a family preset an `EvolvedFamilies`.
+    Both are `EvolvedAlpha`s to the engine and to the ensemble.
+    """
     genome = alpha_genome(preset)
-    return EvolvedAlpha(preset=preset, pre_ranked=pre_ranked,
-                        **genome.decode(vector))
+    cls = EvolvedFamilies if preset_kind(preset) == "families" else EvolvedAlpha
+    return cls(preset=preset, pre_ranked=pre_ranked, **genome.decode(vector))
+
+
+# --------------------------------------------------------------------------
+# EvolvedEnsemble - the average of many survivors, not the champion (ADR-050)
+# --------------------------------------------------------------------------
+
+class EvolvedEnsemble(SignalStrategy):
+    """The average SIGNAL of the N best individuals a search produced.
+
+    The single best individual of a search is the most luck-contaminated object in the
+    whole population: it is the maximum over thousands of draws, and three searches in a
+    row have shown what that maximum is worth out of sample. An equal-weighted average
+    over the top N survivors - across every seed the search ran - keeps whatever the
+    survivors agree on and cancels most of what each one found alone, which is exactly
+    the part that was luck.
+
+    What is averaged, precisely:
+
+      * every member's BELIEF (`alpha`, its weighted sum of ranks, gate ignored) is
+        re-ranked to [0, 1] within the tradable universe, so a member whose weights sum
+        larger cannot out-shout the rest, and the ensemble score is the mean rank over
+        the members that have an opinion on the name - at least `min_members` of them;
+      * the regime gate is a VOTE: the ensemble steps aside on a date when at least half
+        its members would, and invests the mean of those members' defensive exposure
+        while it does. A member with the gate switched off always votes to stay in;
+      * the portfolio shape is the median of the members' shapes - holding count and
+        per-name cap - and the weighting scheme most of them chose.
+
+    Signals are averaged rather than portfolios, deliberately. Averaging thirty
+    twelve-name portfolios produces a two-hundred-name portfolio that pays a dollar of
+    commission minimum on every one of them at this account size, and the result would
+    say more about the cost model than about the signals.
+
+    Not registered under a name: it exists only as the product of a particular search,
+    and `evolve.ensemble_strategy(study)` is how one is obtained.
+    """
+
+    name = "evolved_ensemble"
+
+    def __init__(self, members: list[EvolvedAlpha], study: str = "",
+                 min_members: int | None = None, **params):
+        if not members:
+            raise ValueError("an ensemble needs at least one member")
+        presets = {m.params["preset"] for m in members}
+        if len(presets) != 1:
+            raise ValueError(f"ensemble members must share a preset; got {presets}")
+        pre_ranked = {bool(getattr(m, "pre_ranked", False)) for m in members}
+        if len(pre_ranked) != 1:
+            raise ValueError("ensemble members must all be pre-ranked or all raw")
+
+        self.members = list(members)
+        self.pre_ranked = pre_ranked.pop()
+        self.min_members = int(min_members if min_members is not None
+                               else min(3, len(self.members)))
+        # The fingerprint the registry hashes is `params`, so the members' own
+        # behavioural fingerprints go there: two ensembles are the same trial exactly
+        # when they average the same individuals.
+        genome = members[0]._genome
+        member_ids = [genome.fingerprint(genome.encode(m.params)) for m in members]
+        # `member_fingerprints`, not `members`: BaseStrategy sets every parameter as an
+        # attribute, and the strategy list must survive that.
+        super().__init__(study=study, preset=presets.pop(), n_members=len(members),
+                         min_members=self.min_members, member_fingerprints=member_ids,
+                         **params)
+
+        needed: list[str] = []
+        for m in self.members:
+            needed += list(m.requires_features)
+        self.requires_features = tuple(dict.fromkeys(needed))
+        self.min_date = max((m.min_date or "") for m in self.members)
+        self.warmup = max(int(getattr(m, "warmup", 0) or 0) for m in self.members)
+
+        top_k = int(np.median([m.construction.top_k for m in self.members]))
+        max_weight = float(np.median([m.construction.max_weight for m in self.members]))
+        schemes = [m.construction.weighting for m in self.members]
+        weighting = max(sorted(set(schemes)), key=schemes.count)
+        self.construction = Construction(top_k=top_k, weighting=weighting,
+                                         max_weight=max_weight, min_names=10)
+        self._defensive_column = self.members[0]._defensive_column
+
+    # ------------------------------------------------------------- behaviour
+
+    def on_start(self, panel) -> None:
+        for m in self.members:
+            if hasattr(m, "on_start"):
+                m.on_start(panel)
+
+    def vote(self, ctx: Context) -> tuple[float, float]:
+        """(share of members that would be defensive, their mean defensive gross)."""
+        votes = [m.is_defensive(ctx) for m in self.members]
+        share = float(np.mean(votes)) if votes else 0.0
+        gross = [float(m.params["defensive_gross"]) for m, v in zip(self.members, votes)
+                 if v]
+        return share, (float(np.mean(gross)) if gross else 1.0)
+
+    def is_defensive(self, ctx: Context) -> bool:
+        return self.vote(ctx)[0] >= 0.5
+
+    def alpha(self, ctx: Context) -> np.ndarray:
+        """Mean re-ranked belief across the members with an opinion on each name."""
+        elig = ctx.tradable
+        n = ctx.close.shape[1]
+        total = np.zeros(n, dtype=np.float64)
+        count = np.zeros(n, dtype=np.float64)
+        for m in self.members:
+            s = m.alpha(ctx)
+            r = rank_pct(s, elig)
+            ok = np.isfinite(r)
+            total[ok] += r[ok]
+            count[ok] += 1.0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = total / count
+        return np.where((count >= self.min_members) & np.isfinite(out), out, np.nan)
+
+    def score(self, ctx: Context) -> np.ndarray:
+        if ctx.tradable.sum() < 10:
+            return np.full(ctx.close.shape[1], np.nan)
+        if self.is_defensive(ctx):
+            return self.members[0].defensive_score(ctx)
+        return self.alpha(ctx)
+
+    def target_weights(self, ctx: Context) -> np.ndarray:
+        c = self.construction
+        share, gross = self.vote(ctx)
+        if share >= 0.5:
+            c = replace(c, gross=float(min(max(gross, 0.01), 1.0)))
+        s = np.asarray(self.score(ctx), dtype=np.float64)
+        vol = (self.vol_for_weighting(ctx) if c.weighting == "inverse_vol" else None)
+        return build_weights(s, self.eligible(ctx), c, tiebreak=ctx.tiebreak, vol=vol)
+
+    # ------------------------------------------------------------- reporting
+
+    @property
+    def family_usage(self) -> dict[str, int]:
+        """How many members back each family. Empty for feature-preset members."""
+        counts: dict[str, int] = {}
+        for m in self.members:
+            for fam in getattr(m, "active_families", []):
+                counts[fam] = counts.get(fam, 0) + 1
+        return counts
+
+    @property
+    def feature_usage(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for m in self.members:
+            for f in m.active_features:
+                counts[f] = counts.get(f, 0) + 1
+        return counts
+
+    def describe(self) -> dict:
+        d = super().describe()
+        d["preset"] = self.params["preset"]
+        d["pre_ranked"] = self.pre_ranked
+        d["n_members"] = len(self.members)
+        d["family_usage"] = self.family_usage
+        d["feature_usage"] = self.feature_usage
+        return d
+
+    def explain(self) -> str:
+        """The ensemble in sentences: what its members agree on."""
+        n = len(self.members)
+        lines = [f"Averages the signals of {n} evolved individuals, equal-weighted, "
+                 f"re-ranked before averaging; a name needs at least "
+                 f"{self.min_members} opinions to be scored."]
+        fams = self.family_usage
+        if fams:
+            lines.append("Families backed, by share of members:")
+            for name, k in sorted(fams.items(), key=lambda kv: -kv[1]):
+                label = FAMILY_BY_NAME[name].label if name in FAMILY_BY_NAME else name
+                lines.append(f"    {k / n * 100:5.1f}%  {label}")
+        else:
+            feats = self.feature_usage
+            lines.append("Features ranked, by share of members:")
+            for name, k in sorted(feats.items(), key=lambda kv: -kv[1])[:12]:
+                lines.append(f"    {k / n * 100:5.1f}%  {name}")
+        gated = sum(1 for m in self.members if m.params["use_regime"] == "on")
+        c = self.construction
+        lines.append(f"Holds the top {c.top_k} by score, {c.weighting}-weighted, capped "
+                     f"at {c.max_weight * 100:.1f}% per name (medians of the members).")
+        lines.append(f"{gated} of {n} members carry the regime gate; the ensemble steps "
+                     "aside only when at least half of them would.")
+        return "\n".join(lines)

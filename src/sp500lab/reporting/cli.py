@@ -5,14 +5,22 @@ reporting stack load only when a report is actually asked for.
 
     sp500lab report backtest --open     the research window   -> reports/backtest/
     sp500lab report forward  --open     2022 onward            -> reports/forward/
+    sp500lab report timing   --open     the calendar lab       -> reports/timing/
     sp500lab report genetic  --open     the GA lab             -> reports/genetic_algorithm/
 
-Each set is one folder holding exactly two kinds of file: `index.html`, a scoreboard with
-every algorithm's headline statistics, and one self-contained page per algorithm. Both
-sets are built from the same roster - every built-in strategy, the `custom` group, and
+One folder per lab (ADR-047). `backtest/` and `forward/` are the monthly roster on
+either side of the 2022 boundary: each is one folder holding exactly two kinds of file,
+`index.html` with every algorithm's headline statistics and one self-contained page per
+algorithm, built from the same roster - every built-in strategy, the `custom` group, and
 the winners of the best three genetic-algorithm searches - so `backtest/low-vol.html`
 and `forward/low-vol.html` are the same strategy on either side of the boundary
 (ADR-045).
+
+`report timing` writes the calendar lab: an index and one page per calendar rule, each
+page carrying BOTH windows. The family is nine rules and a rule's research-to-forward arc
+is one story, so it splits by rule rather than by window (ADR-047). Those rules are not
+on the monthly roster - a different engine, a single instrument, all-in or cash - which
+is why they are a folder rather than nine more rows on a scoreboard of stock pickers.
 
 `report genetic` writes three pages about the genetic algorithm itself: how the search
 works, what it is allowed to read, and every search that has run with its winner decoded
@@ -24,7 +32,6 @@ Everything else is on demand and lands in reports/extra/, never inside the sets:
     sp500lab report strategy low_vol    one strategy, in full, from a fresh run
     sp500lab report features            what every feature is, and does it leak
     sp500lab report algorithms          the Algorithm Book
-    sp500lab report timing              the Calendar Lab
     sp500lab report registry            everything tried, with deflated Sharpes
     sp500lab report honesty             coverage, exits and holdout exposure
     sp500lab report study baselines
@@ -40,7 +47,7 @@ import webbrowser
 from pathlib import Path
 
 from ..paths import (BACKTEST_REPORTS_DIR, EXTRA_REPORTS_DIR, FORWARD_REPORTS_DIR,
-                     GENETIC_REPORTS_DIR, REPORTS_DIR)
+                     GENETIC_REPORTS_DIR, REPORTS_DIR, TIMING_REPORTS_DIR)
 from . import queries as Q
 from .tables import feature_usage
 from .util import page_href, slugify
@@ -49,6 +56,7 @@ from .util import page_href, slugify
 #: beside the two sets, so "all strategies" is the backtest index next door.
 _BACKTEST_INDEX = f"../{BACKTEST_REPORTS_DIR.name}/index.html"
 _FORWARD_INDEX = f"../{FORWARD_REPORTS_DIR.name}/index.html"
+_TIMING_INDEX = f"../{TIMING_REPORTS_DIR.name}/index.html"
 _GENETIC_DIR = f"../{GENETIC_REPORTS_DIR.name}"
 
 
@@ -86,6 +94,20 @@ def add_parser(sub) -> None:
                          "shown on each algorithm's own page.")
     _set_args(fw, FORWARD_REPORTS_DIR)
     fw.set_defaults(func=cmd_forward)
+
+    tl = rs.add_parser(
+        "timing",
+        help="the calendar lab: the overnight/intraday decomposition and one page per "
+             f"calendar rule, both windows on each, into {_rel(TIMING_REPORTS_DIR)}/")
+    tl.add_argument("-o", "--out", default=None,
+                    help=f"output DIRECTORY (default: {_rel(TIMING_REPORTS_DIR)}/)")
+    tl.add_argument("--costs", default="realistic",
+                    choices=["optimistic", "realistic", "pessimistic"],
+                    help="which cost setting a rule page's forward half leads with. "
+                         "All three are always shown on the page.")
+    tl.add_argument("--open", action="store_true", dest="open_after",
+                    help="open the index in a browser when the set is written")
+    tl.set_defaults(func=cmd_timing)
 
     gen = rs.add_parser(
         "genetic",
@@ -158,13 +180,6 @@ def add_parser(sub) -> None:
              "scored against the index over its own window, on one page")
     _shared(ab)
     ab.set_defaults(func=cmd_algorithms)
-
-    tl = rs.add_parser(
-        "timing",
-        help="the Calendar Lab: the overnight/intraday decomposition and every "
-             "calendar rule, costed three ways")
-    _shared(tl)
-    tl.set_defaults(func=cmd_timing)
 
 
 def _strategy_args(parser) -> None:
@@ -282,7 +297,7 @@ def cmd_backtest(args) -> int:
         (_FORWARD_INDEX, "Forward tests: 2022 onward →",
          "What the same algorithms did after the research window ended - prediction "
          "against outcome."),
-        _GENETIC_CARD)
+        _GENETIC_CARD, _TIMING_CARD)
     index = index_report(specs, curves=curves, extra_cards=cards,
                          subtitle=f"{len(specs)} algorithms, {args.costs} costs, each "
                                   "scored against the index over its own window.")
@@ -354,10 +369,12 @@ def cmd_forward(args) -> int:
         args,
         (_BACKTEST_INDEX, "← Backtests: the research window",
          "The same algorithms on the data they were built against, one page each."),
-        _GENETIC_CARD)
+        _GENETIC_CARD, _TIMING_CARD)
     index = forward_index_report(records, cost_model=costs,
                                  roster=list(rows["strategy"].astype(str)),
-                                 extra_cards=cards)
+                                 extra_cards=cards,
+                                 hidden_href=(_TIMING_INDEX if args.out is None
+                                              else None))
     path = write_html(index, out_dir / "index.html")
     written.append(path)
     if args.out is None:
@@ -383,6 +400,13 @@ _GENETIC_CARD = (f"{_GENETIC_DIR}/{Q.GENETIC_PAGES['methodology']}",
                  "The genetic algorithm",
                  "How the search works, what it is allowed to read, and every search "
                  "with its winning genome decoded.")
+
+#: The card pointing at the calendar lab. Those rules are forward-tested through the same
+#: harness and counted in the same multiple-testing bar, so a reader of either scoreboard
+#: has to be able to reach them (ADR-047).
+_TIMING_CARD = (_TIMING_INDEX, "The calendar lab",
+                "A different question: not which stocks, but when. The overnight "
+                "decomposition and nine calendar rules, both windows on each page.")
 
 
 def _sibling_cards(args, *specs: tuple[str, str, str]) -> list[dict]:
@@ -639,9 +663,9 @@ def algorithms_page():
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ"),
         index_href=_BACKTEST_INDEX,
         doc_links=[
-            {"title": "The Calendar Lab", "href": "timing.html",
+            {"title": "The Calendar Lab", "href": _TIMING_INDEX,
              "blurb": "The overnight decomposition and every calendar rule, "
-                      "costed three ways."},
+                      "costed three ways, one page each."},
             {"title": "How the GA works", "href": "../../docs/HOW_THE_GA_WORKS.md",
              "blurb": "The five-minute write-up: one page for an executive, one "
                       "for an engineer."},
@@ -651,20 +675,55 @@ def algorithms_page():
         ])
 
 
-def calendar_lab_page():
-    """The Calendar Lab, as a Report."""
+def _optional_hrefs() -> dict:
+    """Links a set may carry only when their target actually exists on disk.
+
+    The Algorithm Book lives in `reports/extra/` and is built on demand, so a set index
+    that always linked to it would ship a dead link most of the time - which is the exact
+    failure ADR-047 exists to fix. Deciding this here rather than in the view keeps the
+    view pure: it renders the links it is handed.
+    """
+    book = EXTRA_REPORTS_DIR / "algorithms.html"
+    return ({"algorithms": f"../{EXTRA_REPORTS_DIR.name}/{book.name}"}
+            if book.exists() else {})
+
+
+def calendar_lab_pages(lab=None, *, costs: str = "realistic", stamp: str = "",
+                       cards: list[dict] | None = None,
+                       hrefs: dict | None = None):
+    """The whole calendar set: the index Report, then one Report per rule.
+
+    Exposed as a page builder rather than only as a command so a caller can have the
+    Reports without the side effect of writing a folder - the same reason
+    `algorithms_page` exists. `lab` is `Q.calendar_lab()`; passing it in lets a test
+    build the set from fixtures instead of from the lake.
+
+    Returns (index, [(name, href, report), ...]).
+    """
+    hrefs = _optional_hrefs() if hrefs is None else hrefs
     from datetime import datetime, timezone
 
-    from .timing_views import timing_report
+    from .timing_views import timing_report, timing_rule_report
 
-    lab = Q.calendar_lab()
-    return timing_report(
+    lab = Q.calendar_lab() if lab is None else lab
+    stamp = stamp or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+    index = timing_report(
         accept=lab["accept"], rules=lab["rules"],
         gross_curves=lab["gross_curves"], net_curves=lab["net_curves"],
         members=lab["members"], member_summary=lab["member_summary"],
         members_csv=lab["members"].to_csv(index=False),
-        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ"),
-        index_href=_BACKTEST_INDEX)
+        generated_at=stamp, extra_cards=cards, hrefs=hrefs)
+
+    curves = lab.get("rule_curves") or {}
+    bench = curves.get(Q.TIMING_BENCHMARK)
+    pages = []
+    for rule in lab["rules"]:
+        name = rule["name"]
+        pages.append((name, rule["href"], timing_rule_report(
+            rule, accept=lab["accept"], curves=curves.get(name), bench_curves=bench,
+            forward=Q.calendar_forward(name, cost_model=costs), generated_at=stamp,
+            hrefs=hrefs)))
+    return index, pages
 
 
 def cmd_algorithms(args) -> int:
@@ -672,7 +731,53 @@ def cmd_algorithms(args) -> int:
 
 
 def cmd_timing(args) -> int:
-    return _write(calendar_lab_page(), args, "timing")
+    """Publish the calendar set: an index and one page per calendar rule.
+
+    Both windows live on a rule's own page (ADR-047), so unlike the monthly sets this
+    one is not split by window - and unlike `report genetic` it does run backtests,
+    because a calendar rule with no research row yet has to have one before it can be
+    reported. `calendar_lab()` logs those fill-in runs under the study "reports"; the
+    holdout is never touched.
+    """
+    from .render.html import write as write_html
+
+    out_dir = Path(args.out or TIMING_REPORTS_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cards = _sibling_cards(
+        args,
+        (_BACKTEST_INDEX, "← The monthly scoreboard",
+         "Thirty algorithms on the other engine, including overnight_momentum - this "
+         "family's one tradable expression."),
+        (_FORWARD_INDEX, "Forward tests: 2022 onward",
+         "The same harness that produced the verdicts on these rule pages, for the "
+         "monthly roster."),
+        _GENETIC_CARD)
+
+    print(f"Building the calendar set into {out_dir}")
+    # Same rule as `_sibling_cards`: a sibling's location is only known when the set is
+    # in the folder it owns. A set written elsewhere with -o stands alone.
+    index, pages = calendar_lab_pages(
+        costs=args.costs, cards=cards,
+        hrefs=_optional_hrefs() if args.out is None else {})
+
+    written = []
+    for name, href, report in pages:
+        page = write_html(report, out_dir / href)
+        written.append(page)
+        verdict = report.meta.get("forward", "not tested")
+        print(f"  {name:22s} {report.meta.get('entries', ''):>7s} entries  "
+              f"{verdict:12s} -> {page.name}")
+    path = write_html(index, out_dir / "index.html")
+    written.append(path)
+    if args.out is None:
+        _prune(out_dir, written)
+
+    print()
+    print(f"  {len(pages)} rule page(s) + index -> {out_dir}")
+    print(f"  open {path}")
+    if args.open_after:
+        webbrowser.open(path.resolve().as_uri())
+    return 0
 
 
 # ------------------------------------------------------------------ helpers

@@ -423,8 +423,20 @@ python -m sp500lab report backtest --open
 python -m sp500lab report forward --open
 ```
 
-Two folders, `reports/backtest/` and `reports/forward/`, each holding an index and one
-page per algorithm and nothing else (ADR-045). Single pages on demand:
+```bash
+python -m sp500lab report timing --open
+```
+
+```bash
+python -m sp500lab report genetic --open
+```
+
+One folder per lab (ADR-045, ADR-047). `reports/backtest/` and `reports/forward/` are the
+monthly roster on either side of the 2022 boundary, each holding an index and one page per
+algorithm and nothing else. `reports/timing/` is the calendar rules, an index and one page
+per rule with both windows on each. `reports/genetic_algorithm/` is three pages on the
+search. `-o DIR` writes a set somewhere else; a folder you point at is yours and is never
+pruned. Single pages on demand:
 
 ```bash
 python -m sp500lab report study baselines --open
@@ -554,6 +566,34 @@ number than any published estimate.
 
 **7. Cancel the subscription.** Confirm `verify` passes and vault is backed up in two places
 first.
+
+---
+
+## The genetic algorithm
+
+```bash
+python -m sp500lab evolve run --study ga-1 --seeds 3
+```
+
+```bash
+python -m sp500lab experiments deflate ga-1
+```
+
+```bash
+python -m sp500lab evolve ensemble ga-1 --all-costs --trades results/trades/ga-1
+```
+
+A search over the nine prior-signed families (`--preset families`, from 2010-07; or
+`families-price`, the five price-visible ones from 2007-04), scored on the worst quarter
+of twelve random sub-periods net of pessimistic costs, three independent seeds pooled into
+an ensemble of the 30 best survivors. A quarter of an hour. Every generation of every seed
+is checkpointed to `data/experiments/evolve/<study>.jsonl` and the ensemble to
+`<study>.ensemble.json`; `evolve ensemble <study> --rebuild` builds one from any
+checkpoint, `evolve best` shows the champion for comparison, `evolve history` the
+per-generation statistics. Give every search its own `--study`: it is what decides
+`n_trials` for the deflated Sharpe, and the number a search prints is uncorrected until
+`experiments deflate` has run. The ensemble, not the champion, is what `forward suite`
+and `report backtest` pick up (ADR-050). See [EVOLUTION.md](EVOLUTION.md).
 
 ---
 

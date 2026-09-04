@@ -32,6 +32,19 @@ No code changes. This is the plan.
 > can be regressed on the factors to ask whether it is a factor bet in disguise. Every
 > strategy also now passes a no-lookahead check (ADR-041), which is what any new family
 > will be held to on arrival.
+>
+> **Status update, 2026-09-04 (ADR-048/049/050).** The genetic algorithm was rebuilt
+> after its three winners went three for three on decay: the search now moves through
+> **nine prior-signed feature families with at most three live**, is scored on the
+> **worst quarter of twelve random sub-periods** net of pessimistic costs with a charge
+> per rule, and hands on the **ensemble of its 30 best survivors** across seeds rather
+> than its champion. That is #9 ensembling applied inside the search rather than across
+> the roster, and it changes what #4 the walk-forward should re-run: the whole
+> multi-seed search, evaluating each window's ensemble on the next. `ga-families-1` is
+> the first search over it: quality plus low risk, 17.75%/yr at 1.15 in research, and
+> **5.73%/yr at 0.46 against the index's 13.52%/0.82 forward — decayed, four for four**,
+> though with the drawdown halved and the turnover check held. The walk-forward remains
+> the most important open item, and the fourth decay is the argument for it.
 
 ---
 

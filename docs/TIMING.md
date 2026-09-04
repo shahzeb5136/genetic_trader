@@ -6,8 +6,19 @@ nine calendar rules, costed three ways on SPY.*
 Everything else in this project chooses **which** stocks to hold and rebalances monthly.
 This lab tests a different family of claims: that returns are not uniform across the
 clock or the calendar. The overnight session is not the trading day, Friday's close is
-not Monday's open, and the turn of the month is not the middle. Design decision:
-[ADR-036](DECISIONS.md). Report: `python -m sp500lab report timing --open`.
+not Monday's open, and the turn of the month is not the middle. Design decisions:
+[ADR-036](DECISIONS.md) for the lab, [ADR-047](DECISIONS.md) for its report set.
+
+```bash
+python -m sp500lab report timing --open
+```
+
+writes `reports/timing/`: an index — the two identities, the decomposition, every rule
+under all three cost settings, the per-ticker table — and **one page per rule carrying
+both windows**, because a rule's research numbers and its forward verdict are one story.
+The rules are not on the monthly roster and never will be: a rule that sits in cash 80% of
+the time gets a structural Sharpe boost, and sorting it into a scoreboard of thirty fully
+invested stock pickers would rank it high for a reason that is not skill.
 
 ```bash
 python -m sp500lab timing accept        # the two identities - run this first
@@ -101,17 +112,27 @@ parameterisations. Claims live in each rule's docstring (`timing/strategies.py`)
 the report page; sample sizes differ by orders of magnitude and the honest reading
 starts there:
 
-| rule | claim | independent sample |
+| rule | claim | entries |
 |---|---|---|
-| `tm_buy_hold` | the bar, and the calibration instrument | — |
-| `tm_overnight` | the market pays its night shift | ~3,700 sessions |
-| `tm_intraday` | the control: the day carries risk for nothing | ~3,700 sessions |
-| `tm_weekend` | Friday close → Monday open is special (French 1980) | ~760 weekends |
-| `tm_turn_of_month` | last session + first three carry the premium (Lakonishok & Smidt) | ~180 boundaries |
-| `tm_month_end_drift` | the run-up INTO month end is the flow window | ~180 months |
-| `tm_pre_holiday` | the session before a closure outperforms (Ariel 1990) | ~130 sessions |
-| `tm_sell_in_may` | hold November–April (Bouman & Jacobsen 2002) | **~15 cycles** |
-| `tm_vix_overnight` | the overnight premium concentrates in high-VIX regimes | ~1,900 nights |
+| `tm_buy_hold` | the bar, and the calibration instrument | 1 |
+| `tm_overnight` | the market pays its night shift | 3,715 |
+| `tm_intraday` | the control: the day carries risk for nothing | 3,715 |
+| `tm_vix_overnight` | the overnight premium concentrates in high-VIX regimes | 1,721 |
+| `tm_weekend` | Friday close → Monday open is special (French 1980) | 769 |
+| `tm_turn_of_month` | last session + first three carry the premium (Lakonishok & Smidt) | 178 |
+| `tm_month_end_drift` | the run-up INTO month end is the flow window | 177 |
+| `tm_pre_holiday` | the session before a closure outperforms (Ariel 1990) | 133 |
+| `tm_sell_in_may` | hold November–April (Bouman & Jacobsen 2002) | **16** |
+
+**`entries` is the sample size, and it is computed, not asserted.** It counts the round
+trips each rule makes over 2007-04 → 2021-12: the engine walks the legs in time order
+(intraday[t], overnight[t], intraday[t+1], …) and the rising edges of that interleaved
+vector are the entries. It is what the cost model charges for and what an independent
+observation *is* for a schedule known years in advance — and it is not the session count.
+`tm_sell_in_may` is invested across 1,806 sessions and enters sixteen times; sixteen is
+what a Sharpe estimated from it is worth. `queries.rule_schedule()` produces the column
+and `test_the_entries_column_reproduces_the_documented_sample_sizes` pins this table to
+it, so the prose here cannot drift from the code (ADR-047).
 
 `tm_turn_of_month` and `tm_month_end_drift` are designed so at most one can be true —
 they split the same institutional-flow story at the month boundary. `tm_sell_in_may` is
@@ -145,6 +166,12 @@ forward engine takes a `runner` argument and the lab passes its leg engine
 All nine rules were sealed and forward-tested on 2026-08-30 as part of the 2026-08 wave.
 Read those verdicts with ADR-037's contamination note attached: the rules were *chosen*
 after the first forward test's results were known.
+
+Those verdicts live on each rule's own page in `reports/timing/`, rendered from the stored
+record by the forward set's own sections (`forward_views.outcome_sections()`) rather than
+by a second implementation. The rules stay out of `reports/forward/`'s pages and inside
+its multiple-testing bar — a candidate that was looked at counts whether or not it has a
+page — and that index links here.
 
 ## What would extend this honestly
 

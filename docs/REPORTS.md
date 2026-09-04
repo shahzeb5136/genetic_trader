@@ -6,7 +6,7 @@ that produced it, send it to someone.
 
 ---
 
-## 1. Three folders, and what is in each
+## 1. One folder per lab, and what is in each
 
 ```bash
 python -m sp500lab report backtest --open
@@ -14,6 +14,10 @@ python -m sp500lab report backtest --open
 
 ```bash
 python -m sp500lab report forward --open
+```
+
+```bash
+python -m sp500lab report timing --open
 ```
 
 ```bash
@@ -28,6 +32,9 @@ reports/
     forward/                     the reserved period, 2022-01 onward
         index.html               prediction against outcome, every algorithm
         <algorithm>.html         one page per forward-tested algorithm
+    timing/                      the calendar lab: WHEN rather than WHICH
+        index.html               the decomposition and every rule costed three ways
+        <rule>.html              one page per calendar rule, BOTH windows on each
     genetic_algorithm/           the search itself, three pages and no index
         methodology.html         how a search works, and every defence in it
         features.html            what it may read, and what it converged on
@@ -35,11 +42,14 @@ reports/
 ```
 
 That is the whole layout, and it is deliberate ([ADR-045](DECISIONS.md),
-[ADR-046](DECISIONS.md)). The two algorithm folders hold exactly two kinds of file — the
-index and the algorithm pages — and nothing else is written into them. A rebuild removes pages an earlier build left behind, so the folder
-always describes the last build. The two indexes link to each other, and a page is named
-by its algorithm, so `backtest/low-vol.html` and `forward/low-vol.html` are the same
-strategy on either side of the boundary.
+[ADR-046](DECISIONS.md), [ADR-047](DECISIONS.md)). The rule is **one folder per lab, and
+a lab splits by window only when it is too big for one page per algorithm.** The monthly
+roster is thirty algorithms across two windows, so it splits; the calendar and genetic
+labs do not. Every set holds exactly two kinds of file — an index and the pages — and
+nothing else is written into one. A rebuild removes pages an earlier build left behind,
+so the folder always describes the last build. The indexes link to each other, and a page
+is named by its algorithm, so `backtest/low-vol.html` and `forward/low-vol.html` are the
+same strategy on either side of the boundary.
 
 **The roster** is the same for both sets and is defined once, in `reporting/queries.py`:
 
@@ -48,6 +58,35 @@ strategy on either side of the boundary.
 | every built-in strategy: the baselines, the twelve hypotheses, the second wave, the learned models, `evolved_blend` | `GROUPS["all"]` in `strategies/__init__.py` |
 | everything in the `custom` group — your own strategies | `GROUPS["custom"]`; `roster()` adds it, the engine's suite does not |
 | the winners of the best three genetic-algorithm searches on disk, ranked by the research Sharpe of each search's best logged run | `ga_winners()`, `GA_WINNERS_SHOWN = 3`; `--ga-winners N` changes the count, `--no-evolved` drops them |
+
+### The calendar lab
+
+`report timing` writes an index and one page per calendar rule. These rules are not on
+the roster above and are not meant to be: they run on a different engine — one
+instrument, all-in or cash, on a schedule known years in advance — and sorting them into
+a scoreboard of thirty fully invested stock pickers would rank a rule that sits in cash
+80% of the time near the top for a reason that is not skill.
+
+| Page | Answers |
+|---|---|
+| `index.html` | The leg engine and its two identities, where SPY's return actually happens, every rule under all three cost settings, and the per-ticker overnight/intraday split with the full CSV embedded |
+| `<rule>.html` | One rule: what it claims in its own docstring, the schedule it trades, the research window costed three ways with its gross and net curves, and — when it was carried into the holdout — the whole forward test |
+
+**Both windows on one page.** The monthly sets split by window because thirty algorithms
+× two windows is too much for one page each. Nine rules is not, and a rule's research and
+forward numbers are one story: `tm_weekend` went from a 0.04 Sharpe in research to −0.20
+forward and is the only `failed` verdict in the entire forward set. The forward half of a
+rule page is built by `forward_views.outcome_sections()` from the same stored record the
+forward set reads, so the two cannot drift into disagreeing about a paired comparison.
+
+**`entries` is the column to read first.** It counts the round trips a rule makes over the
+research window, off its own leg vectors — the legs walk in time order (intraday, then
+overnight, then the next intraday) and the rising edges of that sequence are the entries.
+It is the sample size, and it is not the session count: `tm_sell_in_may` is invested
+across 1,806 sessions and enters sixteen times. Sixteen is what a Sharpe from it is worth.
+
+This is the one set that runs a backtest. A rule with no research-window row yet gets one,
+logged under the study `reports`; the holdout is never touched.
 
 ### The genetic-algorithm lab
 
@@ -58,9 +97,9 @@ it was competing against.
 
 | Page | Answers |
 |---|---|
-| `methodology.html` | What the search space is, what is being maximised, how the population moves, and the four defences against a search that would otherwise overfit every time |
-| `features.html` | The three feature presets, why the lists are short and frozen, and which features each search actually converged on — the winner's weights beside the share of the final population that agreed |
-| `evolved-algorithms.html` | Every search on disk: its settings, its fitness and diversity by generation, its winning genome decoded into a table, the deflated Sharpe, and the forward verdict |
+| `methodology.html` | What the search space is (nine prior-signed families, at most three live), what is being maximised (the worst quarter of twelve random sub-periods, net of pessimistic costs, minus a charge per rule), what a search hands on (an ensemble, not its champion), how the population moves, and the five defences against a search that would otherwise overfit every time |
+| `features.html` | The nine families with their stories, members and signs; what was cut and why; the five presets and why they are short and frozen; and which families and features each search actually converged on — the champion's weights beside the share of the final population that agreed |
+| `evolved-algorithms.html` | Every search on disk: its settings and objective, its fitness and diversity by generation (one line per seed), its champion decoded into a table, its ensemble — members, what they agree on, its own research and forward record — the deflated Sharpe, and the forward verdict of whatever it handed over |
 
 It runs **no backtest and no search**. Every figure comes from the checkpoints in
 `data/experiments/evolve/`, the trial log and the forward store, so the set rebuilds in a
@@ -73,6 +112,10 @@ that have a forward record; it prints the ones that do not. `-o DIR` writes a se
 somewhere else (no pruning, no cross-link), and `--open` launches a browser on the index.
 `report all` is an alias of `report backtest`.
 
+The forward index still counts every candidate that was looked at, including the calendar
+rules it does not show, and names them under *Not everything tested is shown* — with a
+link to `timing/index.html`, since ADR-047, so the pointer goes somewhere.
+
 ### Everything else is on demand
 
 The pages that used to sit beside the set still exist as commands. They land in
@@ -83,7 +126,6 @@ The pages that used to sit beside the set still exist as commands. They land in
 | `report strategy NAME` | one strategy in full, from a fresh run |
 | `report features` | what every feature is, and whether any of it reads the future |
 | `report algorithms` | the Algorithm Book: every competitor explained in its own words and scored on one page |
-| `report timing` | the Calendar Lab: the overnight decomposition and every calendar rule |
 | `report registry` | everything tried, with the deflated Sharpe per study |
 | `report honesty` | coverage, forced exits, dirty trees and the holdout ledger, across every run |
 | `report study NAME` | every run in one study, side by side |
@@ -140,10 +182,12 @@ the change is real, all nine checks, all three cost settings, provenance, and th
 orders.
 
 **The genetic pages** — the search space read off `alpha_genome` rather than restated, the
-objective and every penalty with the reason each one exists, the operators and what each
-defends against, and then per search: what it was told to do, how its fitness and
-diversity moved generation by generation, the winning genome as a table of weighted
-features, the deflated-Sharpe panel, and the forward outcome.
+families and the cut list read off `strategies/genome.py`, the objective and every penalty
+with the reason each one exists, the ensemble rule, the operators and what each defends
+against, and then per search: what it was told to do, how its fitness and diversity moved
+generation by generation and seed by seed, the champion as a table of families and
+weighted features, the ensemble it hands on with what its members agree on, the
+deflated-Sharpe panel, and the forward outcome of the deliverable.
 
 ### Charts are interactive, within the page
 
@@ -220,12 +264,16 @@ src/sp500lab/reporting/
     series.py    equity curves -> plot-ready arrays.        PURE
     tables.py    registry rows -> formatted tables.         PURE
     specs.py     what to draw, never how. The seam.
-    queries.py   what the pages need, as plain data — and the roster both sets share
+    queries.py   what the pages need, as plain data — and the roster both monthly
+                 sets share
     views.py     composes registry data into a Report.      PURE
     forward_views.py
                  the same, over the forward-test store.     PURE
     genetic_views.py
                  the same, over the search checkpoints.     PURE
+    timing_views.py
+                 the same, over the calendar lab. Its       PURE
+                 forward half comes from forward_views.
     render/
         charts.py    spec -> inline SVG    the only file that computes pixels
         html.py      Report -> one self-contained document

@@ -59,8 +59,9 @@ subgraph OUT[" 4 · WHAT YOU ACTUALLY OPEN — reports/ "]
   direction LR
   O_BT["reports/backtest/<br/>index + one page<br/>per algorithm"]
   O_FW["reports/forward/<br/>index + one page<br/>per algorithm"]
+  O_TM["reports/timing/<br/>index + one page per<br/>calendar rule, both windows"]
   O_GA["reports/genetic_algorithm/<br/>methodology · features<br/>evolved-algorithms"]
-  O_EX["reports/extra/<br/>feature layer, registry, honesty,<br/>Algorithm Book, Calendar Lab"]
+  O_EX["reports/extra/<br/>feature layer, registry,<br/>honesty, Algorithm Book"]
 end
 
 %% ============================== EDGES ===============================
@@ -103,6 +104,7 @@ R_FWD ==> REPORTING
 R_EVO ==> REPORTING
 REPORTING ==> O_BT
 REPORTING ==> O_FW
+REPORTING ==> O_TM
 REPORTING ==> O_GA
 REPORTING ==> O_EX
 
@@ -117,4 +119,4 @@ class WIKI,SEC,YF,FRED,KF src
 class INGEST,NORMALIZE,FEATURES,ENGINE,GA,FORWARD,REPORTING,A_BASE,A_WRIT,A_LEARN,A_EVO,A_MINE,A_TIME code
 class BRONZE,SILVER,GOLD,R_RUNS,R_EVO,R_FWD,RESULTS store
 class CHECKS,R_HOLD guard
-class O_BT,O_FW,O_GA,O_EX out
+class O_BT,O_FW,O_TM,O_GA,O_EX out

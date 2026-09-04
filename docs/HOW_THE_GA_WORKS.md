@@ -9,13 +9,14 @@ The full reference is [EVOLUTION.md](EVOLUTION.md); this is the five-minute vers
 
 ## The idea in one paragraph
 
-We describe a trading strategy as a short list of numbers — how much to weight each of
-about twenty company characteristics, how many stocks to hold, and whether to pull back
-when markets turn. Any such list can be tested against twenty years of history in about a
-sixth of a second. The genetic algorithm generates sixty of them, keeps the ones that
-performed best, breeds and mutates those into a new sixty, and repeats twenty-five times.
-It is directed trial and error at machine speed: roughly 1,400 distinct strategies tested
-in five minutes.
+We describe a trading strategy as a short list of numbers — how hard to back each of nine
+well-known investment stories (momentum, low risk, value, quality, …), how many stocks to
+hold, and whether to pull back when markets turn. Any such list can be tested against
+eleven years of history in about a tenth of a second. The genetic algorithm generates
+sixty of them, keeps the ones that performed most *consistently*, breeds and mutates those
+into a new sixty, and repeats twenty-five times — then does the whole thing again from two
+more random starts. It is directed trial and error at machine speed: a few thousand
+distinct strategies tested in a quarter of an hour.
 
 ## The analogy, and where it breaks
 
@@ -30,81 +31,73 @@ skill whatsoever.
 
 Everything expensive in this system exists to tell those two cases apart.
 
-## What it produced
+## What the first three searches produced, and what happened to them
 
-Three searches. All ran only on 2007–2021; the last four years of data were sealed off
-before any of this started. (They have since been spent — see the postscript below —
-which is why this section reads like a prediction: it was one.) The table shows the
-first two; the third, over a feature set including the overnight/intraday decomposition,
-is in the postscript.
+Three searches ran in 2026-08 over a wider version of the design — each of about twenty
+company characteristics could be weighted freely, in either direction. All three ran only
+on data to the end of 2021; 2022 onward was sealed off.
 
-| | Search 1 (price data only) | Search 2 (adds company financials) |
-|---|---:|---:|
-| Period | 2007–2021 | 2010–2021 |
-| Annual return | **12.4%** | **21.9%** |
-| The index, same period | 10.4% | 15.7% |
-| Worst peak-to-trough loss | **−16%** | −28% |
-| The index's worst loss | −55% | −34% |
-| Survives being charged full costs? | Yes (11.9%) | Yes (21.6%) |
+| | Search 1 (prices only) | Search 2 (adds financials) | Search 3 (adds overnight returns) |
+|---|---:|---:|---:|
+| Annual return, 2007/2010–2021 | 12.4% | 21.9% | 10.9% |
+| The index, same period | 10.4% | 15.7% | 10.4% |
+| Passes the luck correction? | yes (99.1%) | yes (99.9%) | yes (98.3%) |
+| **Risk-adjusted score, 2022–2026** | **1.15 → 0.19** | **1.36 → 0.67** | **0.95 → 0.20** |
 
-Search 1's headline is the drawdown, not the return: it lost a sixth of its value at the
-worst point of 2008 where the index lost more than half. Search 2's headline is that it
-independently rediscovered a well-known school of investing — buy profitable companies
-whose earnings are backed by cash — without ever being told that school exists.
+Every one passed the standard statistical correction for "how good would the luckiest of
+1,400 worthless strategies have looked", and every one fell apart on the data it had never
+seen. That is the most reliable thing the search has produced, and it is the right answer
+to the question the project asked: **the correction is necessary and it is not
+sufficient**. A space that wide will always contain something that fits the past.
+
+## What changed in 2026-09
+
+Five changes, each aimed at one way the earlier searches fooled themselves:
+
+1. **A much smaller menu.** Instead of twenty freely weighted characteristics, nine
+   *stories* the finance literature already settled — each a fixed bundle of
+   characteristics with its direction fixed (low volatility is good, high profitability
+   is good). The search picks at most three stories and how hard to back each. It cannot
+   decide that expensive stocks are cheap. Everything without a story was removed, and
+   the reason for every removal is written down.
+2. **Graded on its worst stretch, not its average.** A strategy is scored on twelve
+   random three-to-five-year slices of history and given the mark of its worst quarter.
+   Something that only worked in 2009 dies during breeding instead of surviving to the
+   test.
+3. **Every extra rule costs points.** Each story backed, each characteristic read, and
+   the "pull back in a crash" switch are all charged, so a simpler strategy that ties a
+   complex one wins.
+4. **The team, not the champion.** The single best strategy of a search is, almost by
+   definition, the luckiest one. What the search hands on is the *average* of its thirty
+   best survivors from three independent runs — what they agree on is a finding; what one
+   found alone is a draw.
+5. **Harsher trading costs during the search.** Strategies are charged twice the
+   estimated cost of trading while they evolve, so a strategy that only works if trading
+   is cheap never scores well. Frequent trading is charged again on top.
 
 ## Should you believe it?
 
-There is a standard statistical correction for exactly this problem: given that we tested
-1,400 strategies, how good would the *luckiest worthless one* have looked? The answer here
-is a risk-adjusted score of about **0.64**. Our winners scored **1.36** and **1.78**.
+No — and the machine now says so for a fourth time. The search over the new design
+(`ga-families-1`) found a quality-plus-low-risk portfolio worth 17.8% a year at a 1.15
+risk-adjusted score on 2010–2021, passing the luck correction at 99%. Tested once on
+2022–2026 it returned 5.7% a year against the index's 13.5%: **it made money and it did
+not beat the index**, the same verdict as the three searches before it. It was a more
+*stable* strategy than they were — its worst loss halved and its trading did not blow up
+— and it was not a better one. Note that this design was chosen *after* the 2022–2026
+results had been read, which makes the decay a stronger refutation, not a weaker one.
 
-The correction converts that into a probability that the result is not luck: **99.5%** and
-**99.9%**. Both clear the conventional 95% bar comfortably.
-
-That is a real and meaningful test. It is also not the same as proof, and there are three
-specific reasons to hold this loosely:
-
-1. **At the time this was written, no unseen data had been touched.** We reserved 2022
-   onward for a single look. That look has now happened, and the postscript below says
-   what it found — which is why the rest of this section is kept in its original tense:
-   it documents what was believed before the answer was known.
-2. **Search 1's low drawdown comes from a switch that was tuned on the crisis it is being
-   praised for.** It learned "reduce exposure when markets fall" from a period containing
-   2008 and 2020. Whether that generalises is unknown.
-3. **Search 2 trades a narrower list of companies.** Company financial filings only exist
-   in machine-readable form from 2010, and only for two-thirds of the companies that have
-   passed through the index — disproportionately the ones that survived. Its period was
-   also a much easier market.
+The right next step is a **walk-forward test** — rerun the whole search inside each of
+several past windows and grade each result on the window that followed — and the honest
+sentence is: this is a more disciplined way of asking the question, and the answer, four
+times now, is that a search over this history does not find something that beats the
+index on the history that follows.
 
 ## What it costs to run
 
-A five-minute search on one laptop. No cloud, no GPU, no market-data subscription — the
+A quarter of an hour on one laptop. No cloud, no GPU, no market-data subscription — the
 entire project runs on free public sources within a $20/month budget. Every one of the
-1,400 strategies tested is permanently logged, which is what makes the statistical
-correction above possible at all: you cannot retroactively count the ideas you threw away.
-
-## The decision this supports
-
-Not "deploy capital". The right next step is a **walk-forward test**: re-run the entire
-search inside each of several historical windows and grade each winner on the window that
-followed. That produces genuinely out-of-sample evidence without spending the reserved
-period, and it costs about twenty minutes of compute. After that — and only after that —
-the reserved 2022–2026 period is worth its single look.
-
-## Postscript: the look happened, and the machine was right to be suspicious
-
-The reserved period was spent in 2026-08 (ADR-033). Both winners above **decayed** —
-Search 1 from a 1.15 Sharpe to 0.19, Search 2 from 1.36 to 0.67 — which is precisely what
-the multiple-testing arithmetic on this page predicts for the best of 1,400 draws, while
-simpler hand-written strategies largely matched their predictions. A third search was
-then run over a new feature set (the overnight/intraday decomposition and the dividend
-calendar — preset `night`, ADR-038): 1,404 trials, winner 10.9%/yr at Sharpe 0.95 with a
-−18% drawdown, deflated Sharpe 0.983 — and forward-tested the same week, **it decayed to
-0.20**. Three searches, three excellent in-sample winners, three decays. That
-replication, not any single winner, is the most solid thing the genetic algorithm has
-produced: the correction on this page is not pessimism, it is a forecast that has now
-verified three times. (The third test is weaker than the first two — it was built after
-the first forward results were read; ADR-037 records that contamination.)
+thousands of strategies tested is permanently logged, which is what makes the statistical
+correction possible at all: you cannot retroactively count the ideas you threw away.
 
 ---
 
@@ -113,13 +106,17 @@ the first forward results were read; ADR-037 records that contamination.)
 ## The loop
 
 ```
-population ← 60 genomes (8 seeded from known strategies, rest random)
-repeat 25 times:
-    score every genome  → one full backtest each, cached by behavioural fingerprint
-    log every individual to the experiment registry as a trial
-    keep the 4 best untouched (elitism)
-    breed 52 children   → tournament select ×2, crossover, mutate
-    inject 4 random immigrants
+for each of N seeds:
+    population ← 60 genomes (9 seeded, one per family; the rest random)
+    repeat 25 times:
+        score every genome  → one full backtest each, cached by behavioural fingerprint
+                              (the cache is shared across seeds)
+        log every individual to the experiment registry as a trial
+        keep the 4 best untouched (elitism)
+        breed 52 children   → tournament select ×2, crossover, mutate
+        inject 4 random immigrants
+ensemble ← the top 30 distinct individuals across all seeds, beliefs averaged
+score the ensemble once, log it as one more trial, store it beside the checkpoint
 ```
 
 Fitness is `run_backtest`. That is the entire trick, and it is why the backtest engine was
@@ -129,131 +126,156 @@ hand-written one. The scoreboard cannot tell them apart.
 
 ## The genome
 
-A weighted sum of **cross-sectionally ranked features**, plus portfolio shape.
+A weighted sum of **prior-signed family composites** of cross-sectionally ranked
+features, plus portfolio shape.
 
 | genes | what |
 |---:|---|
-| 13 or 23 | one weight per feature, each in [−1, +1] |
+| 9 (or 5) | one weight per family, each in [0, 1]; at most 3 non-zero after decoding |
 | 1 | `top_k` — how many names to hold (10–100) |
 | 1 | `max_weight` — per-name cap (2%–20%) |
 | 1 | weighting scheme — equal / score-rank / inverse-vol |
 | 3 | regime gate — on/off, defensive exposure, volatility trigger |
 
-19 genes for the price preset, 29 with fundamentals. Deliberately small:
+15 genes for `families`, 11 for `families-price`. A family composite is the mean of its
+members' percentile ranks, `rank` for a high-is-good member and `1 − rank` for a
+low-is-good one, so every term is in [0, 1] and a missing member counts as average. The
+cap is enforced by `Genome.effective()` — the dead zone and everything past the cap are
+zeroed before the vector is decoded or fingerprinted — so a capped-out gene changes
+neither the portfolio nor the trial count.
 
 - **Ranks, not raw values.** One bad share count is worth "first place", not +25 standard
   deviations.
-- **A dead zone at ±0.10.** Weights below it are exactly zero, so "how many features does
-  this use" has an answer, parsimony pressure has something to grip, and two behaviourally
-  identical genomes deduplicate to one trial.
-- **No expression trees.** No evolved arithmetic, no products of indicators. Every point in
-  the space reads as a sentence — `describe_genome()` prints one — because a winning
-  parameter vector nobody can read is one nobody can check.
+- **Signs are priors, not genes.** The search cannot back value backwards.
+- **No expression trees.** Every point in the space reads as a sentence —
+  `describe_genome()` prints one — because a winning parameter vector nobody can read is
+  one nobody can check.
+- **Presets are frozen.** The three older free-weight presets (`price`, `full`, `night`)
+  still decode their checkpoints bit-identically; the families are new presets, not a
+  rewrite.
 
 ## Fitness
 
-Default: the **monthly** Sharpe, computed on each of four contiguous sub-periods separated
-by a one-month embargo, aggregated as `mean − 0.5 × std`. Optional turnover and
-per-feature complexity penalties.
+The **monthly** Sharpe of the net-of-cost curve under the **pessimistic** cost setting,
+computed on each of twelve random sub-periods of three to five years (drawn once from a
+fixed seed, so every individual and every seed sees the same ones), aggregated as the
+**25th percentile**, minus 0.02 per family backed, 0.01 per feature read, 0.03 if the
+regime gate is on, and 0.03 per 100%/yr of turnover.
 
-Three choices worth defending:
+Four choices worth defending:
 
 **Monthly, not daily.** Daily returns of a monthly-rebalanced portfolio are strongly
 autocorrelated, so 4,861 daily observations carry roughly 176 independent ones. The
 deflated Sharpe uses the monthly figure, so the search and its own significance test look
 at the same number.
 
-**Not raw return.** Handed return, a long-only search finds leverage as concentration:
-`top_k` at its floor, ten names, a magnificent CAGR and a 70% drawdown.
+**The worst quarter, not the mean.** A mean-minus-spread over four folds still rewards a
+rule that is excellent in two and ordinary in two. The 25th percentile of twelve
+overlapping sub-periods does not.
 
-**Fold consistency, not full-sample.** A strategy that made everything in 2009 and nothing
-since has a fine full-sample Sharpe and a poor fold score. Folds are contiguous with an
-embargo, never random K-fold — financial data is autocorrelated and a shuffled split leaks
-across the boundary. The folds are sliced from the single equity curve each individual
-already produced, so four folds cost zero extra backtests.
+**Costs inside, at the pessimistic setting.** If costs were applied after the fact the
+search would evolve a high-turnover rule every time. Charging twice the spread while it
+evolves, then charging turnover again on top, is the statement that the spread estimate
+is the weakest input in the chain.
 
-> ⚠️ **Folds measure consistency, not generalisation.** Every fold sits inside the research
-> window and the winner was selected using all of them. See ADR-032.
+**Every rule has a price.** The −16% drawdown that made the first search's winner look
+best was a two-parameter regime switch tuned on a window containing 2008. It now costs
+0.03 of fitness to switch on.
+
+> ⚠️ **Sub-periods measure consistency, not generalisation.** Every one sits inside the
+> research window and the winner was selected using all of them. See ADR-032 and ADR-049.
+
+## The ensemble
+
+The deliverable is `EvolvedEnsemble`: the equal-weighted average of the **beliefs** of the
+top 30 distinct individuals across every seed. Each member's weighted sum of ranks is
+re-ranked to [0, 1] before averaging; the regime gate is a vote (step aside when at least
+half the members would, at their mean defensive exposure); the holding count and cap are
+the members' medians. Beliefs rather than portfolios, because averaging thirty twelve-name
+portfolios gives a two-hundred-name one paying a dollar of commission minimum on every
+name at this account size. The champion is still decoded and shown — it is the one
+individual the ensemble is measured against. ADR-050.
 
 ## Operators
 
 | | choice | why not the obvious alternative |
 |---|---|---|
-| Selection | tournament (size 3) | fitness is a Sharpe — it can be negative, so roulette-wheel needs an invented offset |
-| Crossover | BLX-α blend, 30% uniform | feature weights have no meaningful gene *order*, so a single cut point is arbitrary |
+| Selection | tournament (size 3) | fitness can be negative, so roulette-wheel needs an invented offset |
+| Crossover | BLX-α blend, 30% uniform | weights have no meaningful gene *order*, so a single cut point is arbitrary |
 | Mutation | Gaussian nudge scaled per gene, plus rare full reset | the nudge alone cannot reintroduce diversity a population has lost |
 | Survival | 4 elites + 4 random immigrants | pulling in opposite directions on purpose: cannot go backwards, cannot finish converging |
+| Seeds | `--seeds N` independent populations, one study, one cache | one population converges on one neighbourhood; the pool does not |
 
-Every operator takes an explicit `numpy.random.Generator`; nothing touches global state. A
-search that cannot be replayed cannot be audited.
+Every operator takes an explicit `numpy.random.Generator`; nothing touches global state.
+A search that cannot be replayed cannot be audited.
 
 ## Performance
 
-**~0.15 s per individual**, so 1,500 evaluations is about five minutes. Four things buy it:
+**~0.1–0.2 s per individual**, so a 60 × 25 seed is three to six minutes. Four things buy
+it: the price panel is built once and memoised; **feature ranks are precomputed once for
+the whole population**; each individual is **one** backtest whose sub-periods are sliced
+from the resulting curve; and the evaluation cache keys on the behavioural fingerprint and
+is shared across seeds.
 
-1. the price panel is built once and memoised;
-2. **feature ranks are precomputed once for the whole population** — a rank depends on the
-   date and the tradable mask, not on the genome, so a 1,500-evaluation search was
-   otherwise recomputing each one 1,500 times (0.29 s → 0.15 s);
-3. each individual is **one** backtest whose folds are sliced from the resulting curve;
-4. the evaluation cache keys on the behavioural fingerprint, so a converged population is
-   free to re-evaluate.
+## The five defences against overfitting
 
-## The four defences against overfitting
-
-1. **A small, bounded, readable space** — above.
-2. **Every individual logged as a trial**, not just winners. The deflated Sharpe needs the
-   trial count and the spread of trial Sharpes, and neither is recoverable afterwards. The
-   registry's trial count and the GA's evaluation cache key on the *same* behavioural
-   fingerprint — counting clones twice over-deflates, not deduplicating at all
-   under-deflates.
-3. **Fold-consistency fitness** — above.
-4. **The holdout is untouched.** Searches stop the day before 2022-01-01. Reaching past it
+1. **A small, bounded, readable space** — nine prior-signed families, at most three live.
+2. **Every individual logged as a trial**, not just winners; the ensemble is one more.
+3. **Worst-quarter fitness, net of pessimistic costs, minus a charge per rule.**
+4. **The holdout is untouched.** Searches stop the day before 2022-01-01; reaching past it
    requires an explicit flag and is written to a ledger that cannot be disabled.
+5. **The deliverable is an ensemble, not the champion.**
 
 ## Results, with the correction
 
+The three free-weight searches, and what the reserved period did to them:
+
 ```
-                                   ga-price-1        ga-full-2
-distinct trials                          1,403            1,407
-expected max Sharpe (luck alone)          0.64             0.70
-winner's monthly Sharpe                   1.36             1.78
-deflated Sharpe                         0.9947           0.9995
+                                   ga-price-1        ga-full-2        ga-night-1
+distinct trials                          1,403            1,407             1,407
+expected max Sharpe (luck alone)          0.64             0.70              0.67
+winner's monthly Sharpe                   1.36             1.78              1.20
+deflated Sharpe                         0.9947           0.9995            0.9828
+forward Sharpe (2022 onward)              0.19             0.67              0.20
 ```
 
-Both winners are readable. `ga-price-1` converged on low volatility, low beta, low
-idiosyncratic volatility and low lottery-payoff — the neighbourhood `low_vol` and
-`lottery_averse` occupy — and turned its regime gate hard on. `ga-full-2` found high ROE,
-high gross profitability and low accruals (Novy-Marx and Sloan, independently), ranked
-book-to-market *negatively* while ranking earnings yield positively, and turned the regime
-gate off. Its window contains no 2008, which is the cleanest evidence in this project that
-the two searches found different things because they looked at different periods.
+The first search over the families (`ga-families-1`, three seeds, 4,179 distinct
+individuals, ensemble of 30) converged on quality plus low risk and nothing else — every
+one of the thirty members, gate off, 35 names — for 17.75%/yr at a 1.15 Sharpe under
+realistic costs against SPY's 15.66%/0.95 on the same 2010–2021 window, deflated 0.992
+over 4,180 trials. Because the survivors are near-clones, the ensemble is the champion
+this time (17.33% against 17.38% at pessimistic costs). Forward-tested once, the same
+day: **5.73%/yr at a 0.46 Sharpe on 2022-02 → 2026-09 against the index's 13.52%/0.82 —
+decayed**, at all three cost settings, with the drawdown halved (−15.3%) and the
+turnover check held. Four searches, four decays. The full account is in
+[EVOLUTION.md](EVOLUTION.md) and on the searches page of `report genetic`.
 
 ## Running one
 
 ```bash
-python -m sp500lab evolve run --study my-search --preset price --generations 25 --population 60
+python -m sp500lab evolve run --study my-search --seeds 3
 python -m sp500lab experiments deflate my-search
-python -m sp500lab evolve best my-search --all-costs --trades results/trades/my-search
+python -m sp500lab evolve ensemble my-search --all-costs --trades results/trades/my-search
+python -m sp500lab evolve best my-search            # the champion, for comparison
 python -m sp500lab report genetic --open
 ```
 
-Everything on this page is also generated as three linked HTML pages by
-`sp500lab report genetic`, with the numbers filled in from the searches that have
-actually run — see `reports/genetic_algorithm/`.
-
-Every generation is checkpointed to `data/experiments/evolve/<study>.jsonl`, so a killed
-run resumes and a finished one can be re-read without re-running. Ctrl-C returns the state
-at the last completed generation.
+`--preset families-price` runs the five price-visible families from 2007; `--preset
+price|full|night` runs the older free-weight spaces; `--fold-scheme contiguous
+--aggregate mean_minus_std` reproduces the old objective. Every generation of every seed is
+checkpointed to `data/experiments/evolve/<study>.jsonl`, the ensemble to
+`<study>.ensemble.json`, and `evolve ensemble <study> --rebuild` builds one from any
+checkpoint.
 
 ## What is deliberately absent
 
-Multi-objective (NSGA-II) selection, island models, adaptive operator rates. All reasonable,
-and none address the failure mode that actually threatens this project — which is not slow
-convergence, it is converging beautifully onto noise.
+Multi-objective (NSGA-II) selection, island models, adaptive operator rates, expression
+trees. All reasonable, and none address the failure mode that actually threatens this
+project — which is not slow convergence, it is converging beautifully onto noise.
 
 ---
 
 **Next:** [EVOLUTION.md](EVOLUTION.md) for the full detail · [STRATEGIES.md](STRATEGIES.md)
 for what it is competing against · [EXPERIMENTS.md](EXPERIMENTS.md) for the trial log and
-the holdout · ADR-031 and ADR-032 in [DECISIONS.md](DECISIONS.md) for the decisions.
+the holdout · ADR-031, ADR-032 and ADR-048 to ADR-050 in [DECISIONS.md](DECISIONS.md) for
+the decisions.

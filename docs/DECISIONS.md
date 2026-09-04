@@ -1739,9 +1739,10 @@ membership table — which is the argument for the cross-check in one sentence.
 
 ---
 
-## ADR-045 — The report folder is two sets and nothing else
+## ADR-045 — The report folder is sets and nothing else
 
-**Status:** accepted (2026-09-03)
+**Status:** accepted (2026-09-03); title amended by ADR-047, which generalised "two
+sets" to "one folder per lab". The decision below is unchanged.
 
 **Context.** By 2026-08-30 `reports/` held 163 files and 254 MB: thirty strategy pages,
 the feature layer, the registry, the honesty panel, the Algorithm Book, the Calendar Lab,
@@ -1783,8 +1784,8 @@ report set is where a strategy of your own is meant to be read next to it.
 
 **What stays honest.** The forward index's multiple-testing bar is computed over every
 forward record, not over the roster, and the page names the tested candidates it does not
-show (the calendar rules, today), because a candidate that was looked at counts whether or
-not it has a page. Nothing in the record is deleted or hidden from the store; only the
+show (the calendar rules, today — since ADR-047 it also links to them), because a
+candidate that was looked at counts whether or not it has a page. Nothing in the record is deleted or hidden from the store; only the
 folder got smaller. `tests/test_forward_reports.py` pins it.
 
 **Consequence.** `report all` remains as an alias of `report backtest`. Three console
@@ -1857,3 +1858,249 @@ anything logged in that study, and a reader comparing the page against
 the three searches that have run: all three winners cleared the 0.95 deflated-Sharpe
 convention on the research window, and all three decayed out of sample. The pages say so
 in that order.
+
+---
+
+## ADR-047 — The calendar rules get a folder, not nine more scoreboard rows
+
+**Status:** accepted (2026-09-04)
+
+**Context.** The nine calendar rules were forward-tested through the same harness as
+everything else and appeared in no report set. `reports/backtest/` and `reports/forward/`
+are built from `queries.roster()`, which is the monthly strategy registry; a `tm_` rule is
+not in it, so the forward index carried a note naming nine tested candidates it did not
+show and pointing nowhere. Their only page, the Calendar Lab, had been on-demand since
+ADR-045 and lived in `reports/extra/` — a folder that did not exist on disk, because
+nobody had run the command since the reshape. Every number was in the store. None of it
+was in the deliverable.
+
+**Why not just add them to the two sets.** Three reasons, in order of how much they hurt.
+The backtest index sorts on ΔSharpe against the index, and a rule that sits in cash 80% of
+the time gets a structural Sharpe boost from not being in the market during the
+volatility — `TurnOfMonth`'s own docstring says so. Sorted into a table of thirty fully
+invested stock pickers it would rank near the top for a reason that is not skill, and the
+comparison the set exists to make would quietly stop being valid. Second, the page shape
+does not fit: `strategy_report` takes feature coverage, holdings and orders, and a
+calendar rule has one instrument, no cross-section and no features, while its interesting
+columns — exposure, cost drag, entries, the gross-to-net gap — have nowhere to go. Third,
+`roster()` feeds two builders, and putting a second engine's names in it means every
+consumer has to branch on which engine a name belongs to.
+
+**Decision.** `sp500lab report timing` writes `reports/timing/`: an index and one page per
+calendar rule, named by the rule, pruned on rebuild — the same grammar as the two monthly
+sets. `reports/` is now one folder per lab, and a lab splits by window only when it is too
+big for one page per algorithm. The monthly roster (thirty algorithms × two windows) is;
+the calendar and genetic labs are not.
+
+**Both windows on one page, which is the substantive choice.** A calendar rule's research
+and forward numbers are one story: `tm_weekend` went from a 0.04 Sharpe in research to
+−0.20 forward and is the single `failed` verdict in the whole 29-candidate forward set.
+Filing the claim in one folder and its refutation in another would be the wrong shape for
+a family this size.
+
+**The forward half is not written twice.** `forward_views.outcome_sections()` is public
+for exactly this: a rule page renders its paired comparison, its curve, its significance
+arithmetic, its nine checks and its three cost settings with the forward set's own
+sections, from the same stored record. A forward table computed in two places is a forward
+table that will eventually disagree with itself, and the disagreement would be invisible —
+both copies would look plausible.
+
+**`entries` replaces a prose column.** Every page reports the round trips a rule makes over
+the research window, counted off its own leg vectors: the legs are walked in time order
+(intraday[t], overnight[t], intraday[t+1], …) and the rising edges of that interleaved
+vector are the entries. It reproduces what `docs/TIMING.md` had been asserting in prose —
+overnight ~3,700, weekend ~760, turn-of-month ~180, pre-holiday ~130, sell-in-May ~15 —
+from the code, so the two cannot drift. It is the number that decides how to read every
+other number on the page: `tm_sell_in_may` is invested across 1,806 sessions and enters
+sixteen times, and sixteen is the sample. `test_the_entries_column_reproduces_the_documented_sample_sizes`
+pins it.
+
+**One printed number changed.** `time in market` used to be `(overnight | intraday).mean()`,
+which called an overnight-only rule 100% invested because some part of every session was
+held. It now counts half-sessions, so holding every night reads 50%. The old number
+invited exactly the comparison against buy-and-hold that the column exists to inform.
+
+**What stays where it was.** `roster()` and `forward_roster()` are untouched, so the
+monthly sets are unchanged. The calendar rules remain outside the forward set's pages and
+inside its multiple-testing bar — they were looked at, so they count — and its "not
+everything tested is shown" note now links here instead of naming nine candidates and
+stopping. `queries.claim_for()` resolves the timing registry as well, so anything handed a
+`tm_` record renders it with the rule's own docstring rather than an empty claim.
+
+**Consequence.** `reports/` holds four folders. The calendar set is about 600 KB for ten
+pages; it is the only set that runs a backtest, because a rule with no research row yet
+has to have one before it can be reported, and those fill-in runs are logged under the
+study "reports" with the holdout untouched. What it reports today: nothing in the family
+beats buy-and-hold on ΔSharpe under realistic costs, the best trial deflates to 0.69
+against the family's own 27 trials, and the one rule that was refuted out of sample is on
+its own page saying so.
+
+---
+
+## ADR-048 — The search space is nine prior-signed families, at most three at a time
+
+**Status:** accepted (2026-09-04)
+
+**Context.** Three genetic searches ran over the feature presets of ADR-031 — 13, 23 and
+17 free weights, each in [−1, +1] — and every one cleared the 0.95 deflated-Sharpe
+convention and decayed out of sample (`ga-price-1` 1.15 → 0.19, `ga-full-2` 1.36 → 0.67,
+`ga-night-1` 0.95 → 0.20). The deflated Sharpe corrects for how many configurations were
+*tried*; it cannot correct for a space wide enough that some configuration fits fifteen
+years of monthly history by construction. Even thirteen free signs and magnitudes is that
+wide: the searches disagreed with the literature and with each other on the sign of
+book-to-market, residual momentum and the overnight decomposition, and each disagreement
+was in-sample noise wearing a weight.
+
+**Decision.** Two new presets, `families` and `families-price`, replace the free-weight
+space as the default. The 22 features with a prior story are grouped into nine
+economically motivated families — momentum, short-term reversal, low risk, illiquidity,
+payout, value, quality, investment, earnings surprise — each a fixed composite of its
+members' percentile ranks, every member signed by the literature (`vol_126d` low is good,
+`gross_profitability` high is good). The genome carries one **non-negative** weight per
+family and the preset caps how many may be live at once (`max_active = 3`), enforced when
+the vector is decoded: `Genome.effective()` zeroes the dead zone and everything past the
+cap, `decode()` returns that vector, and `fingerprint()` hashes it. The search picks
+*which* stories to back and how hard. It cannot rank value backwards, and it cannot back
+all nine at once. `families` carries all nine from 2010-07; `families-price` the five
+visible from 2007-04 without a filing. 15 and 11 genes, against 19 to 29 before.
+
+**Why families rather than fewer features.** A family is a hypothesis somebody could have
+written down before looking: "back quality and low risk, two to one". A weight on
+`accruals` is not — the sign is half the hypothesis, and a search that is free to choose
+it is free to fit it. Fixing the sign inside the family removes 2^k hypotheses per k
+features at no loss anyone can name, because the reversed hypothesis is one nobody would
+defend in prose.
+
+**Why the composite is `1 − rank` for a low-is-good member, not a negative weight.** Every
+term stays in [0, 1], so a name missing a member is scored as average on it. With
+negative weights a name missing a low-is-good feature would be quietly rewarded for
+having no value, which is a survivorship channel in miniature.
+
+**What was cut, and the reason is data.** Everything without a story: redundant horizons
+(`mom_6_1`, `ret_12m`, `vol_21d`), the contested overnight decomposition, the size and
+spread proxies, the index-entry flags, the ambiguous ratios, filing behaviour and every
+macro series. `CUT_FEATURES` in `strategies/genome.py` records each cut beside its
+reason, the features page prints it, and a future search that wants one back has to
+argue with the reason rather than with an absence.
+
+**Presets stay immutable (ADR-038).** A family's member tuple, its signs and its preset's
+cap are part of the decode-by-position contract. `test_the_family_presets_are_frozen`
+pins all of them; the three feature presets are untouched and their checkpoints decode
+bit-identically (`test_a_feature_genome_still_decodes_exactly_as_before`).
+
+**Consequence.** `EvolvedFamilies` is a subclass of `EvolvedAlpha` with the same engine
+contract, so the family search costs the same ~0.1–0.2 s per evaluation and flows
+through the same cache, registry, forward harness and report set. The first search over
+it is `ga-families-1`.
+
+---
+
+## ADR-049 — Fitness is the worst quarter of random sub-periods, net of pessimistic costs, minus a charge per rule
+
+**Status:** accepted (2026-09-04)
+
+**Context.** ADR-032's objective scored an individual on four contiguous folds aggregated
+as `mean − 0.5 × std`, under realistic costs, with turnover and complexity penalties that
+defaulted to zero. It was better than the whole-window Sharpe and it was not enough: a
+mean-minus-spread over four folds still rewards a rule that is excellent in two folds and
+ordinary in two, and a search charged the realistic spread evolved 250–350%/yr of
+turnover in every winner.
+
+**Decision.** Four changes to the objective, all defaults, all recorded in every
+checkpoint and every run's manifest.
+
+1. **Random sub-periods, drawn once.** `Folds.random` draws twelve contiguous sub-periods
+   of three to five years at random positions in the research window, from a private
+   generator seeded by `fold_seed` — never from the search's own random state, so every
+   individual and every seed of a search is scored on the same sub-periods and their
+   fitnesses can be pooled. They overlap, and usually do; that is the point. The
+   contiguous scheme stays available as `--fold-scheme contiguous`.
+2. **The worst quarter decides.** `aggregate = quantile` at 0.25: an individual's fitness
+   is the 25th percentile of its sub-period Sharpes. A rule that only works in one
+   stretch is killed *during* evolution rather than surviving to the test set on the
+   strength of that stretch. `min` is the harsher option and `mean_minus_std` the old one.
+3. **Costs inside the fitness, at the pessimistic setting.** The curve being scored has
+   always been net of costs; it is now net of commission plus *twice* the estimated
+   half-spread. A rule that only works if the spread estimator is kind never scores well.
+   The turnover penalty then charges turnover a second time (0.03 per 100%/yr), on
+   purpose: it is a statement about model risk in the spread estimate, not about costs.
+4. **Complexity, charged per rule.** 0.02 per family backed, 0.01 per feature read, and
+   0.03 for switching the regime gate on. A three-family strategy with the gate pays about
+   0.18 of fitness more than a one-family one without it, so it has to earn that in the
+   worst-quarter statistic. The earlier searches showed why the gate is charged: the −16%
+   drawdown that made `ga-price-1` look best was two parameters tuned on a window that
+   contained 2008.
+
+**What this is still not.** Sub-periods measure robustness. Every one is inside the
+research window and every individual is selected using all of them, so a good score is
+evidence of consistency and not of generalisation. The out-of-sample test remains the
+2022 holdout, looked at once and recorded (ADR-025). The "not a shuffled K-fold" rule of
+ADR-032 holds: a random sub-period is one contiguous stretch of history, random only in
+where it starts and how long it is.
+
+**Cost.** None to speak of. Twelve sub-periods are sliced from the single equity curve the
+individual already produced, as the four folds were.
+
+**Consequence.** The fitness a checkpoint records is no longer comparable with the three
+earlier searches' fitnesses, and the searches page says which objective each search
+used. `EvolutionConfig` moved to `evolve/config.py` so the command line can print the
+engine's own defaults without importing pandas.
+
+---
+
+## ADR-050 — A search hands on an ensemble, not its champion
+
+**Status:** accepted (2026-09-04)
+
+**Context.** The single best individual of a search is the maximum over thousands of
+draws — the most luck-contaminated object in the whole population — and it is exactly
+what every earlier search handed to the forward test. Three for three decayed. The
+population around the champion holds the same information with most of the luck averaged
+out: what thirty survivors agree on is a finding, what one of them found alone is a
+draw.
+
+**Decision.** A search's deliverable is `EvolvedEnsemble`: the equal-weighted average of
+the **beliefs** of its top `ensemble_size` (30) distinct individuals by fitness, pooled
+across every seed it ran (`--seeds N` runs N independent populations sharing the study,
+the objective and the evaluation cache). Precisely:
+
+- each member's weighted sum of ranks, gate ignored, is re-ranked to [0, 1] within the
+  tradable universe and the ensemble score is the mean over members with an opinion on
+  the name, at least three of them;
+- the regime gate is a vote — the ensemble steps aside when at least half its members
+  would, investing the mean of those members' defensive exposure;
+- the holding count and per-name cap are the medians of the members', the weighting
+  scheme the mode.
+
+**Beliefs, not portfolios.** Averaging thirty twelve-name portfolios gives a
+two-hundred-name portfolio paying a dollar of commission minimum on every name at this
+account size, and the result would measure the cost model rather than the signals.
+
+**It is stored, logged and discovered like everything else.** The ensemble is written
+beside the checkpoint as `<study>.ensemble.json`, backtested once at the end of the search
+and logged into the same study as one more trial, so the deflated Sharpe of anything in
+the study counts it. `evolve.winners()` hands over the ensemble as `<study>-ensemble`
+wherever one exists and the champion as `<study>-best` where none does, so the forward
+suite and both report sets receive the deliverable without knowing which kind it is.
+`sp500lab evolve ensemble <study> --rebuild` builds one from any checkpoint, across all
+its seeds, for a search that predates this decision or was interrupted.
+
+**The champion is still shown.** The searches page decodes it beside the ensemble because
+it is the one individual the ensemble is measured against, and because a reader who sees
+only the average cannot check what the survivors converged toward.
+
+**Consequence.** The three earlier searches keep handing over their champions — their
+forward tests are spent and their record must not move — and every search from
+`ga-families-1` on hands over an ensemble. Its honest test is the data that arrives after
+2026-09, exactly as ADR-037 says of everything built after the holdout was read.
+
+**Postscript, the same day.** `ga-families-1-ensemble` was forward-tested once, on the
+user's decision, under all three cost settings (`forward run` now resolves an evolved
+deliverable by name, so a single look no longer requires a suite that re-spends the
+older champions'). 2022-02 → 2026-09: 5.73%/yr at a 0.46 Sharpe against the index's
+13.52%/0.82; monthly Sharpe 1.42 → 0.55, −1.5σ. **Decayed, four for four.** It made
+money, halved its drawdown and held its turnover — the redesign produced a more stable
+strategy — and it did not beat the index in a mega-cap regime. Because the design was
+chosen after the 2022–2026 results were read, the decay is a stronger refutation than a
+hold would have been a confirmation. The walk-forward is the next piece of evidence, and
+the months after 2026-09 the only clean one.

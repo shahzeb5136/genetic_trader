@@ -283,7 +283,8 @@ at every close and open — pinned to the monthly engine by two exact identities
 fitted parameters. Headline: SPY's overnight leg made 8.31%/yr gross at Sharpe 0.71
 against intraday's 2.21%/0.22 — and ~500 round trips/yr of realistic costs cut the
 overnight rule to 3.66%. The gap IS the finding. `sp500lab timing ...` is the CLI;
-`report timing` the page; `timing decompose` the per-ticker split. Study: `timing-1`.
+`report timing` the report set (`reports/timing/`, ADR-047); `timing decompose` the
+per-ticker split. Study: `timing-1`.
 
 **A third GA search** (`ga-night-1`, preset `night`, ADR-038 — presets are immutable,
 new features mean a new preset). 1,404 trials; winner 10.89%/yr, Sharpe 0.95, −17.9%
@@ -291,18 +292,21 @@ maxDD, deflated 0.9828. Forward: **decayed to 0.20** — the third GA winner in 
 decay, now the project's most replicated result.
 
 **Two report pages.** `report algorithms` — the Algorithm Book, every competitor
-explained from its own docstring and scored on one page — and `report timing`. Both are
-on-demand pages under `reports/extra/` since ADR-045; the two report sets hold only an
-index and one page per algorithm. The genetic algorithm has its own three-page set,
-`report genetic` -> `reports/genetic_algorithm/` (ADR-046).
+explained from its own docstring and scored on one page — and `report timing`. Both were
+on-demand pages under `reports/extra/` after ADR-045. The Algorithm Book still is; the
+Calendar Lab became a set of its own in 2026-09 (`report timing` -> `reports/timing/`,
+ADR-047), an index plus one page per calendar rule with both windows on each. The genetic
+algorithm has its own three-page set, `report genetic` -> `reports/genetic_algorithm/`
+(ADR-046). `reports/` is now one folder per lab.
 
 **The forward harness grew a `runner` parameter** so the leg engine's results flow
 through the same seal → paired comparison → store pipeline as everything else. All
 sixteen new candidates were sealed as one set (rationale discloses the contamination)
 and tested under all three cost settings: `ga-night-1-best` and `vol_managed` decayed,
-`tm_weekend` failed, the rest held. The holdout ledger now reads 117 looks; the
-`selection_bar` counts 38 candidates and the bar rose to a 0.72 forward Sharpe —
-anything below that is indistinguishable from the luckiest of 38.
+`tm_weekend` failed, the rest held. The holdout ledger read 117 looks after that wave;
+the `selection_bar` counted 38 candidates and the bar rose to a 0.72 forward Sharpe —
+anything below that is indistinguishable from the luckiest of 38. (After the
+`ga-families-1-ensemble` look of 2026-09-04, §4e: 120 looks, 40 candidates, bar 0.71.)
 
 **And one §7-grade bug, caught by its own absurdity** (ADR-037 postscript): revision 1
 of `shallow_mlp` kept fitted nets across runs of one instance, and the forward harness
@@ -311,6 +315,53 @@ Sharpe, which is what exposed it. Fixed by a state reset in `on_start` plus a
 backward-time guard, pinned by a run-twice-identical test, re-sealed as revision 2
 (0.33 forward vs 0.38 research — held, mediocre both ways). The contaminated records
 stay in the append-only ledgers, labelled by their own rationale.
+
+### 4e. What was built on 2026-09-04 — the genetic algorithm, redesigned
+
+The three searches above all cleared the deflated-Sharpe bar and all decayed forward, so
+the search itself was rebuilt end to end (ADR-048, ADR-049, ADR-050; `docs/EVOLUTION.md`).
+Nothing in the engine, the registry, the fingerprint or the forward harness changed, and
+the three stored searches decode bit-identically.
+
+**The space: nine prior-signed families, at most three live.** `strategies/genome.py`
+groups the 22 features with a prior story into families — momentum, reversal, low risk,
+illiquidity, payout, value, quality, investment, earnings surprise — each a fixed
+composite of prior-signed ranks. New presets `families` (from 2010-07, 15 genes) and
+`families-price` (from 2007-04, 11 genes) carry one non-negative weight per family and a
+cap of three, enforced by `Genome.effective()` at decode time. The 57 features without a
+story are cut and `CUT_FEATURES` records why. `EvolvedFamilies` is the strategy.
+
+**The objective: the worst quarter of twelve random 3–5-year sub-periods** (`Folds.random`,
+drawn once from `--fold-seed`), net of **pessimistic** costs, minus 0.02 per family, 0.01
+per feature, 0.03 for the regime gate and 0.03 per 100%/yr turnover. `EvolutionConfig`
+moved to `evolve/config.py`.
+
+**The deliverable: an ensemble.** `--seeds N` runs N populations under one study with one
+cache; the top 30 distinct individuals across all of them become `EvolvedEnsemble` — beliefs
+re-ranked and averaged, the gate a vote, the shape the members' median — backtested once,
+logged as one more trial, stored as `<study>.ensemble.json`. `evolve.winners()` hands over
+`<study>-ensemble` where one exists and `<study>-best` where none does, so `forward
+suite` and both report sets get it without knowing which. `sp500lab evolve ensemble`
+re-runs it beside the champion. The genetic report set gained the families, the cut
+list, the objective per search and an ensemble section per search.
+
+**The first search over it, `ga-families-1`** (three seeds, defaults): 4,500 evaluations,
+4,179 distinct individuals, 20 minutes. Every one of the 30 ensemble members backs
+quality (about 0.66) and low risk (about 0.23) and nothing else, gate off, 35 names —
+the cap and the per-rule charges pruned the third family every time. Ensemble under
+realistic costs: 17.75%/yr, Sharpe 1.15, −30.2% maxDD, 220% turnover, against SPY's
+15.66%/0.95 on 2010-07 → 2021-12; deflated Sharpe of the study's best run 0.9924 over
+4,180 trials. The ensemble equals the champion (17.33% vs 17.38% pessimistic) because
+the survivors are near-clones; diversity-aware membership is the next refinement if
+that repeats. **Forward-tested the same day on the user's decision, once, all three cost
+settings (looks 118–120): DECAYED.** 2022-02 → 2026-09: 5.73%/yr, Sharpe 0.46 against
+the index's 13.52%/0.82; monthly Sharpe 1.42 → 0.55 (−1.5σ); drawdown −15.3% and the
+turnover check held. Four GA searches, four decays — the redesign made the strategy
+more stable, not better, in a mega-cap regime. Everything built today postdates the
+holdout read (ADR-037), which makes the decay a stronger refutation rather than a
+weaker one. `forward run` now resolves an evolved deliverable by name
+(`ga-families-1-ensemble`), so one look can be spent without a suite re-spending the
+older champions'.
 
 ### Gaps that will bite, by severity
 
@@ -437,9 +488,12 @@ layer against what they actually recompute beats guessing at it.
 **5. Walk-forward harness.** Purging and an embargo. Required before any *searched*
 result means anything (§6).
 
-**6. Genetic algorithms — DONE.** `evolve/`, ADR-031 and ADR-032. Weighted sums of ranked
-features rather than expression trees, every individual logged as a trial, fitness
-measured on fold consistency, and the holdout untouched. `docs/EVOLUTION.md`.
+**6. Genetic algorithms — DONE, and redesigned 2026-09-04.** `evolve/`, ADR-031/032 and
+ADR-048/049/050. Nine prior-signed families with at most three live rather than free
+weights or expression trees, every individual logged as a trial, fitness the worst
+quarter of twelve random sub-periods net of pessimistic costs minus a charge per rule,
+the ensemble of the 30 best survivors across seeds as the deliverable, and the holdout
+untouched. `docs/EVOLUTION.md`.
 
 **6b. Forward-testing harness — DONE.** `forward/`, ADR-033 and ADR-034. Pre-registered
 seals, a paired research-versus-forward comparison with the standard error on the
@@ -794,26 +848,33 @@ here:
   2022-01-01 onward is excluded by default, and every look is permanently recorded in a
   ledger that cannot be disabled (ADR-025).
 - Use walk-forward with purging and an embargo. Never random K-fold — financial data is
-  autocorrelated and it leaks. **Partly done:** fitness defaults to four contiguous folds
-  with a one-month embargo, aggregated as `mean - 0.5*std`. That measures CONSISTENCY, not
-  generalisation — every fold is inside the research window and the winner was selected
-  using all of them. A true walk-forward re-runs the whole search per fold and is the next
-  thing to build (ADR-032). López de Prado's *Advances in Financial Machine Learning* is
-  still the reference.
+  autocorrelated and it leaks. **Partly done:** fitness defaults to the 25th percentile
+  of twelve random contiguous sub-periods of three to five years, drawn once per search
+  (ADR-049; the four embargoed folds of ADR-032 remain available). That measures
+  CONSISTENCY, not generalisation — every sub-period is inside the research window and
+  the winner was selected using all of them. A true walk-forward re-runs the whole
+  search per fold and is the next thing to build. López de Prado's *Advances in
+  Financial Machine Learning* is still the reference.
 - Constrain the search space deliberately. An unconstrained GA over indicator
   combinations will find something that works beautifully in-sample every single time.
-  **Done:** weighted sums of cross-sectionally ranked features plus a portfolio shape —
-  19 genes, no expression trees, and `describe_genome` prints any individual as sentences
-  (ADR-031). If you widen this, widen it knowing that every added feature multiplies the
-  trial count the deflation has to discount.
+  **Done, twice:** weighted sums of cross-sectionally ranked features plus a portfolio
+  shape (ADR-031), and then — after three free-weight winners decayed — nine prior-signed
+  families with at most three live, 15 genes, the sign fixed by the literature (ADR-048).
+  `describe_genome` prints any individual as sentences. If you widen this, widen it
+  knowing that every added family multiplies the trial count the deflation has to
+  discount, and that a feature without a prior story is cut on purpose.
+- **Do not hand on the champion.** The best single individual is the maximum over
+  thousands of draws. **Done:** the deliverable is the average signal of the 30 best
+  survivors across seeds (ADR-050).
 
 **Fitness should not be raw return.** Use a risk-adjusted, cost-inclusive measure, and
 penalize turnover explicitly — GAs will happily discover a strategy that trades 400 times
 a year and dies on costs. **Done:** the default objective is the MONTHLY Sharpe — the same
 quantity `registry.deflate()` uses, so the search and its own significance test look at the
-same number — with optional turnover and per-feature complexity penalties. Handed raw
-return, a long-only GA finds leverage as concentration: `top_k` at its floor, ten names, a
-magnificent CAGR and a 70% drawdown.
+same number — of the curve net of PESSIMISTIC costs, at the worst quarter of the
+sub-periods, with turnover, per-feature, per-family and gate penalties all non-zero by
+default (ADR-049). Handed raw return, a long-only GA finds leverage as concentration:
+`top_k` at its floor, ten names, a magnificent CAGR and a 70% drawdown.
 
 **The baselines already demonstrate this failure mode.** Under `optimistic` costs
 `random_weight` posts 11.17%/yr and the second-best Sharpe in the suite, beating 12-1

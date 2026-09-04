@@ -51,7 +51,9 @@ apart.
 
 **Reports read records, not the engine.** Everything under `reports/forward/` and
 `reports/genetic_algorithm/` is built from stored records with no backtest and no panel,
-which is what lets a report be rebuilt years later from the record alone.
+which is what lets a report be rebuilt years later from the record alone. `reports/timing/`
+is the one exception and says so: a calendar rule with no research-window row yet gets one,
+logged under the study `reports`, and its forward half still comes entirely from the store.
 
 ---
 
@@ -68,7 +70,7 @@ which is what lets a report be rebuilt years later from the record alone.
 | `strategies/` | `baselines`, `alpha`, `frontier`, `learned`, `evolvable` + `genome`, `signals`, and `custom.py` which is yours | [STRATEGIES.md](STRATEGIES.md), [ADDING_A_STRATEGY.md](ADDING_A_STRATEGY.md) |
 | `backtest/` | The engine: `engine`, `panel`, `portfolio`, `costs`, `spreads`, `delisting`, `trades`, `metrics`, `accept` | [BACKTEST.md](BACKTEST.md) |
 | `backtest/registry/` | The trial log, the curve log, the deflated Sharpe, and the holdout ledger | [EXPERIMENTS.md](EXPERIMENTS.md) |
-| `evolve/` | The genetic algorithm: `engine`, `fitness`, `operators` | [EVOLUTION.md](EVOLUTION.md), [HOW_THE_GA_WORKS.md](HOW_THE_GA_WORKS.md) |
+| `evolve/` | The genetic algorithm: `config` (the defaults), `fitness` (worst quarter of random sub-periods), `operators`, `engine` (the loop, the seeds, the ensemble) | [EVOLUTION.md](EVOLUTION.md), [HOW_THE_GA_WORKS.md](HOW_THE_GA_WORKS.md) |
 | `timing/` | The second, daily leg engine: `data`, `engine`, `strategies`, `decompose` | [TIMING.md](TIMING.md) |
 | `forward/` | The out-of-sample test: `windows`, `seal`, `engine`, `compare`, `legs`, `store` | [FORWARD_TEST.md](FORWARD_TEST.md) |
 | `reporting/` | `queries` then `views` / `forward_views` / `genetic_views` then `render/` | [REPORTS.md](REPORTS.md) |
@@ -94,8 +96,9 @@ which is what lets a report be rebuilt years later from the record alone.
 |---|---|
 | `reports/backtest/` | An index plus one page per algorithm, research window |
 | `reports/forward/` | An index plus one page per algorithm, 2022 onward |
+| `reports/timing/` | An index plus one page per calendar rule, both windows on each |
 | `reports/genetic_algorithm/` | `methodology.html`, `features.html`, `evolved-algorithms.html` |
-| `reports/extra/` | Anything asked for on its own: feature layer, registry, honesty, Algorithm Book, Calendar Lab |
+| `reports/extra/` | Anything asked for on its own: feature layer, registry, honesty, Algorithm Book |
 | `results/forward/` | One folder per forward test: trades, holdings, weights, exits |
 | `results/trades/` | Exported order ledgers, one folder per strategy |
 | `logs/` | Console output from long runs. Not regenerable, and not reports. |
@@ -146,6 +149,15 @@ apart.
 ```bash
 npx -y @mermaid-js/mermaid-cli -i docs/project-map.mmd -o docs/project-map.svg -b "#ffffff" -c docs/project-map.config.json
 ```
+
+Then fix up the root `<svg>` element by hand, because mermaid-cli does not emit what
+`tests/test_docs.py` requires and the tests are the specification:
+
+- `role="img" aria-label="sp500lab project map"`, and a `<title>` as the first child
+- a `<rect>` filled `#ffffff` covering the viewBox, INSTEAD of the
+  `style="background-color: ..."` the `-b` flag produces — an inline background style is
+  dropped when the SVG is loaded through an `<img>` tag, which is how this page loads it,
+  and dark text on a transparent ground disappears in a dark-mode reader
 
 Render with **`htmlLabels: false`**, which is what that config file sets. The default emits
 `<foreignObject>` elements holding HTML, and a browser refuses to draw those when an SVG is
@@ -215,8 +227,9 @@ subgraph OUT[" 4 · WHAT YOU ACTUALLY OPEN — reports/ "]
   direction LR
   O_BT["reports/backtest/<br/>index + one page<br/>per algorithm"]
   O_FW["reports/forward/<br/>index + one page<br/>per algorithm"]
+  O_TM["reports/timing/<br/>index + one page per<br/>calendar rule, both windows"]
   O_GA["reports/genetic_algorithm/<br/>methodology · features<br/>evolved-algorithms"]
-  O_EX["reports/extra/<br/>feature layer, registry, honesty,<br/>Algorithm Book, Calendar Lab"]
+  O_EX["reports/extra/<br/>feature layer, registry,<br/>honesty, Algorithm Book"]
 end
 
 %% ============================== EDGES ===============================
@@ -259,6 +272,7 @@ R_FWD ==> REPORTING
 R_EVO ==> REPORTING
 REPORTING ==> O_BT
 REPORTING ==> O_FW
+REPORTING ==> O_TM
 REPORTING ==> O_GA
 REPORTING ==> O_EX
 
@@ -273,7 +287,7 @@ class WIKI,SEC,YF,FRED,KF src
 class INGEST,NORMALIZE,FEATURES,ENGINE,GA,FORWARD,REPORTING,A_BASE,A_WRIT,A_LEARN,A_EVO,A_MINE,A_TIME code
 class BRONZE,SILVER,GOLD,R_RUNS,R_EVO,R_FWD,RESULTS store
 class CHECKS,R_HOLD guard
-class O_BT,O_FW,O_GA,O_EX out
+class O_BT,O_FW,O_TM,O_GA,O_EX out
 ```
 
 ---

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..paths import BACKTEST_REPORTS_DIR
+from ..paths import BACKTEST_REPORTS_DIR, TIMING_REPORTS_DIR
 from .util import page_href
 
 BOOK_FAMILIES = {
@@ -75,24 +75,37 @@ def build_strategy(name: str, *, start, end, holdout: str, costs: str,
 
 
 def evolved_winners() -> list[dict]:
-    """The winner of every genetic-algorithm search on disk, with a readable claim.
+    """The deliverable of every genetic-algorithm search on disk, with a readable claim.
 
     The discovery and genome decoding live in `evolve.winners()` so the report set and
     the forward-test suite cannot decode one genome two different ways. This adds only
-    the prose.
+    the prose. A search with a stored ensemble hands over the ensemble (ADR-050); the
+    three searches that predate ensembles hand over their champion.
     """
     from ..evolve.engine import winners
     from ..strategies.genome import alpha_genome, describe_genome
 
     out = []
     for w in winners():
-        claim = (
-            f"Evolved, not written. The best of {w['n_population']} individuals in the "
-            f"final generation of the search “{w['study']}”, found by a genetic "
-            "algorithm over a bounded space of weighted feature ranks. "
-            + describe_genome(alpha_genome(w["preset"]), w["vector"]).replace("\n", " "))
+        n_seeds = len(w.get("seeds") or [])
+        if w.get("kind") == "ensemble":
+            claim = (
+                f"Evolved, not written. The average signal of the {w['n_members']} best "
+                f"of {w['n_individuals']:,} distinct individuals scored by the search "
+                f"\u201c{w['study']}\u201d"
+                + (f" across {n_seeds} seeds" if n_seeds > 1 else "")
+                + ", found by a genetic algorithm over a bounded space of prior-signed "
+                "feature families. "
+                + " ".join(w["strategy"].explain().split()))
+        else:
+            claim = (
+                f"Evolved, not written. The best of {w['n_population']} individuals in "
+                f"the final generation of the search \u201c{w['study']}\u201d, found by "
+                "a genetic algorithm over a bounded space of weighted feature ranks. "
+                + describe_genome(alpha_genome(w["preset"]), w["vector"]).replace(
+                    "\n", " "))
         out.append({"name": w["name"], "strategy": w["strategy"], "claim": claim,
-                    "study": w["study"]})
+                    "study": w["study"], "kind": w.get("kind", "champion")})
     return out
 
 
@@ -188,13 +201,25 @@ def claim_for(name: str) -> str:
     cannot drift. An evolved winner has no docstring - it was never written by anyone -
     so its claim is the decoded genome, which is the same text `report backtest` gives it and
     is the reason the search space is bounded to something readable (ADR-031).
+
+    Calendar rules live in their own registry and are the reason the last lookup is not
+    an afterthought: they are forward-tested through the same harness, so anything that
+    renders a stored forward record can be handed one and must not print it with an
+    empty claim (ADR-047).
     """
     from ..backtest.strategy import get_strategy
     try:
         return claim_of(get_strategy(name))
     except Exception:                                             # noqa: BLE001
         pass
-    return next((w["claim"] for w in evolved_winners() if w["name"] == name), "")
+    found = next((w["claim"] for w in evolved_winners() if w["name"] == name), "")
+    if found:
+        return found
+    try:
+        from ..timing.strategies import get_timing_strategy
+        return claim_of(get_timing_strategy(name))
+    except Exception:                                             # noqa: BLE001
+        return ""
 
 
 def feature_panel():
@@ -313,7 +338,17 @@ def deflation_from(df, row) -> dict | None:
         return None
     sr_obs = sr_m / np.sqrt(12.0)
     full_kurt = float(row["kurtosis_monthly"]) + 3.0
-    return {"study": study, "n_trials": n_trials,
+    bar = metrics.expected_max_sharpe(n_trials, spread / np.sqrt(12.0))
+    # The same keys `registry.deflate()` returns, so a deflation panel built from a
+    # loaded frame and one built from the registry render identically.
+    return {"run_id": row.get("run_id"), "strategy": row.get("strategy"),
+            "study": study, "n_trials": n_trials,
+            "trial_sharpe_std": round(spread, 4), "n_months": n_months,
+            "sharpe_annualised_daily": round(float(row.get("sharpe", float("nan"))), 4),
+            "sharpe_annualised_monthly": round(sr_m, 4),
+            "expected_max_sharpe_annualised": round(float(bar * np.sqrt(12.0)), 4),
+            "psr_vs_zero": round(float(metrics.probabilistic_sharpe(
+                sr_obs, n_months, float(row["skew_monthly"]), full_kurt)), 4),
             "deflated_sharpe": metrics.deflated_sharpe(
                 sr_obs, n_months, float(row["skew_monthly"]), full_kurt,
                 n_trials, spread / np.sqrt(12.0))}
@@ -497,8 +532,7 @@ def timing_entries(df, forward, curves_wanted):
         if real is None:
             continue
         strat = get_timing_strategy(name)
-        on, intra = strat.legs(data)
-        exposure = float((on[lo:hi] | intra[lo:hi]).mean())
+        sched = rule_schedule(strat, data, lo, hi)
         paras = paragraphs(type(strat))
         entries.append(AlgorithmEntry(
             name=name, family="The calendar rules", engine="daily legs",
@@ -510,8 +544,9 @@ def timing_entries(df, forward, curves_wanted):
             bench=bench,
             deflation=deflation_from(df, real),
             forward=forward.get(name),
-            href="timing.html",
-            exposure=f"In the market {exposure:.0%} of sessions.",
+            href=f"../{TIMING_REPORTS_DIR.name}/{page_href(name)}",
+            exposure=f"In the market {sched['exposure']:.0%} of the clock, "
+                     f"over {sched['episodes']:,} entries.",
         ))
         curves_wanted[name] = real.get("run_id")
     return entries
@@ -537,8 +572,9 @@ def ga_summary(df, forward) -> dict:
             continue
         if best is None or not d.get("n_trials"):
             continue
-        winner_name = f"{study}-best"
-        fwd = forward.get(winner_name, {})
+        # The forward verdict belongs to whatever the search handed over: its ensemble
+        # where it built one, its champion otherwise (ADR-050).
+        fwd = forward.get(f"{study}-ensemble") or forward.get(f"{study}-best", {})
         searches.append({
             "study": study,
             "preset": preset_of(study),
@@ -655,9 +691,53 @@ def algorithm_book() -> dict:
     }
 
 
+#: The rule the calendar set treats as the bar rather than as a competitor. It is the
+#: calibration instrument - both legs, always on - so it gets a page like everything
+#: else and is never sorted into the ranking.
+TIMING_BENCHMARK = "tm_buy_hold"
+
+
+def rule_schedule(strategy, data, lo: int, hi: int) -> dict:
+    """What a calendar rule's two leg vectors amount to over the research window.
+
+    `episodes` is the number the honesty of this whole family turns on. A session has
+    two tradable legs and the engine walks them in time order - intraday[t], then
+    overnight[t], then intraday[t+1] - so the rising edges of that interleaved vector
+    count the ROUND TRIPS the rule makes, which is both what the cost model charges for
+    and what "independent observation" means for a fixed schedule.
+
+    That matters because `sessions` flatters a rule and `episodes` does not.
+    `tm_sell_in_may` is invested across ~1,900 sessions and makes about fifteen entries:
+    the sample is fifteen. Deriving it from the legs rather than restating it as prose
+    is what stops the page and the code disagreeing about how much evidence there is.
+    """
+    import numpy as np
+
+    on, intra = (v[lo:hi] for v in strategy.legs(data))
+    interleaved = np.empty(on.size + intra.size, dtype=bool)
+    interleaved[0::2] = intra                 # open -> close of session t
+    interleaved[1::2] = on                    # close of t -> open of t+1
+    entries = int(np.count_nonzero(interleaved & ~np.r_[False, interleaved[:-1]]))
+    held = on | intra
+    return {
+        "sessions": int(np.count_nonzero(held)),
+        "of_sessions": int(held.size),
+        "exposure": float(interleaved.mean()),
+        "episodes": entries,
+        "legs": ("both legs" if on.any() and intra.any() else
+                 "overnight only" if on.any() else
+                 "intraday only" if intra.any() else "never invested"),
+    }
+
+
 def calendar_lab() -> dict:
-    """Everything the Calendar Lab view needs: the acceptance checks, every rule
-    costed three ways, the gross and net leg curves, and the member decomposition."""
+    """Everything the calendar set needs: the acceptance checks, every rule costed three
+    ways with its schedule and its curves, and the per-ticker decomposition.
+
+    One call for the whole set, not one per page. `decompose_members` is a pass over
+    every security in the point-in-time index, and running it nine more times to draw
+    nine rule pages would make the report cost what the research cost (ADR-047).
+    """
     from ..backtest import registry
     from ..timing.data import load_timing_data
     from ..timing.decompose import decompose_members, summarise
@@ -669,6 +749,7 @@ def calendar_lab() -> dict:
     data = load_timing_data()
     lo = data.date_index("2007-04-02", side="next")
     hi = data.date_index(RESEARCH_END, side="prev")
+    forward = forward_lookup()
 
     rules, run_ids = [], {}
     bench_sharpe = None
@@ -686,17 +767,23 @@ def calendar_lab() -> dict:
         real = rows.get("realistic")
         if real is None:
             continue
-        if name == "tm_buy_hold":
+        if name == TIMING_BENCHMARK:
             bench_sharpe = float(real["sharpe"])
         strat = get_timing_strategy(name)
-        on, intra = strat.legs(data)
         paras = paragraphs(type(strat))
+        schedule = rule_schedule(strat, data, lo, hi)
         rules.append({
             "name": name,
+            "href": page_href(name),
             "claim": paras[0] if paras else "",
             "explain": paras[1:2],
-            "exposure": f"{float((on[lo:hi] | intra[lo:hi]).mean()):.0%}",
+            "paragraphs": paras,
+            "exposure": f"{schedule['exposure']:.0%}",
+            "schedule": schedule,
+            "window": f"{str(real['start'])[:7]}–{str(real['end'])[:7]}",
             "settings": {c: row_stats(r) for c, r in rows.items()},
+            "forward": forward.get(name),
+            "is_benchmark": name == TIMING_BENCHMARK,
             "_sharpe": float(real["sharpe"]),
         })
         run_ids[name] = real.get("run_id")
@@ -705,25 +792,72 @@ def calendar_lab() -> dict:
                          if bench_sharpe is not None else None)
 
     stored = registry.load_curves([rid for rid in run_ids.values() if rid])
-    by_name = {name: stored.get(rid) for name, rid in run_ids.items() if rid}
+    rule_curves = {}
+    for name, rid in run_ids.items():
+        frame = stored.get(rid) if rid else None
+        if frame is None:
+            continue
+        rule_curves[name] = {
+            "net": frame["nav"],
+            "gross": (frame["nav_gross"] if "nav_gross" in frame.columns
+                      else frame["nav"]),
+            "benchmark": (frame["benchmark"] if "benchmark" in frame.columns else None),
+        }
     gross_curves, net_curves = {}, {}
     labels = {"tm_buy_hold": "buy & hold", "tm_overnight": "overnight (close→open)",
               "tm_intraday": "intraday (open→close)"}
     for name, label in labels.items():
-        frame = by_name.get(name)
-        if frame is None:
+        curves = rule_curves.get(name)
+        if curves is None:
             continue
-        gross_curves[label] = frame["nav_gross"] if "nav_gross" in frame.columns             else frame["nav"]
-        net_curves[label] = frame["nav"]
+        gross_curves[label] = curves["gross"]
+        net_curves[label] = curves["net"]
     for name in ("tm_turn_of_month", "tm_sell_in_may", "tm_vix_overnight"):
-        frame = by_name.get(name)
-        if frame is not None:
-            net_curves[name.replace("tm_", "")] = frame["nav"]
+        curves = rule_curves.get(name)
+        if curves is not None:
+            net_curves[name.replace("tm_", "")] = curves["net"]
 
     members = decompose_members(start="2007-04-01", end=RESEARCH_END)
-    return {"accept": accept, "rules": rules,
+    return {"accept": accept, "rules": rules, "rule_curves": rule_curves,
             "gross_curves": gross_curves, "net_curves": net_curves,
             "members": members, "member_summary": summarise(members)}
+
+
+def calendar_forward(name: str, cost_model: str = "realistic") -> dict | None:
+    """One calendar rule's stored forward test: the record, the paired comparison and a
+    row per cost setting - or None if it was never carried into the holdout.
+
+    The same three objects `forward_strategy_report` works from, which is the point: a
+    rule page renders its forward half with the forward set's own sections rather than
+    growing a second implementation of them (ADR-047).
+    """
+    try:
+        from ..forward import store
+        from ..forward.compare import compare
+        records = store.load()
+    except Exception:                                             # noqa: BLE001
+        return None
+    if records is None or len(records) == 0:
+        return None
+    rows = records[records["strategy"].astype(str) == name]
+    if rows.empty:
+        return None
+    # Newest look per cost setting, and a revision that bumped the fingerprint
+    # supersedes its own earlier seal - the same rule `primary_rows` applies.
+    rows = (rows.sort_values("logged_at")
+            .drop_duplicates("seal_id", keep="last")
+            .drop_duplicates("cost_model", keep="last"))
+    primary = rows[rows["cost_model"] == cost_model]
+    row = primary.iloc[-1] if len(primary) else rows.iloc[-1]
+    try:
+        record = store.get(str(row["forward_id"]))
+    except Exception:                                             # noqa: BLE001
+        return None
+    if record is None:
+        return None
+    return {"record": record,
+            "comparison": compare(record.research_leg(), record.forward_leg()),
+            "rows": rows}
 
 
 # --------------------------------------------------------------------------
@@ -747,17 +881,34 @@ def genetic_lab() -> dict:
 
     Returns `searches` (one entry per search with a checkpoint on disk, best research
     Sharpe first), `registry_only` (searches the trial log remembers but whose
-    checkpoint is gone, so no winner can be decoded), `presets` and `genome`.
+    checkpoint is gone, so no winner can be decoded), the presets of both kinds, the
+    families with their stories, what was cut and why, and the genome anatomy.
     """
-    from ..strategies.genome import PRESETS
+    from ..strategies.genome import (CUT_FEATURES, FAMILIES, FAMILY_PRESETS,
+                                     PRESET_MIN_DATE, all_presets, preset_features,
+                                     preset_kind)
 
     searches = [_search_record(study) for study in _checkpointed_studies()]
     searches = [s for s in searches if s is not None]
-    searches.sort(key=lambda s: -(s["research"] or {}).get("sharpe", float("-inf")))
+    searches.sort(key=lambda s: -((s["research"] or {}).get("sharpe")
+                                  if (s["research"] or {}).get("sharpe") is not None
+                                  else float("-inf")))
     return {
         "searches": searches,
         "registry_only": _registry_only_studies({s["study"] for s in searches}),
-        "presets": {name: tuple(features) for name, features in PRESETS.items()},
+        "presets": {name: tuple(preset_features(name)) for name in all_presets()},
+        "preset_kinds": {name: preset_kind(name) for name in all_presets()},
+        "min_dates": dict(PRESET_MIN_DATE),
+        "families": [{
+            "name": f.name, "label": f.label, "story": f.story,
+            "reference": f.reference, "members": list(f.members),
+            "presets": [n for n, fp in FAMILY_PRESETS.items() if f.name in fp.families],
+        } for f in FAMILIES],
+        "family_presets": {name: {"families": list(fp.families),
+                                  "max_active": fp.max_active,
+                                  "min_date": fp.min_date, "note": fp.note}
+                           for name, fp in FAMILY_PRESETS.items()},
+        "cut": [(reason, list(names)) for reason, names in CUT_FEATURES],
         "genome": genome_anatomy(),
     }
 
@@ -794,66 +945,136 @@ def _registry_only_studies(known: set[str]) -> list[dict]:
 
 
 def _search_record(study: str) -> dict | None:
-    """One search: its settings, its training history, its winner, and what became of it."""
-    import json
-
+    """One search: its settings, its history, its champion, its ensemble, and what
+    became of whichever of the two it handed over."""
     import numpy as np
 
-    from ..evolve.engine import EVOLVE_DIR, load_history, load_population, study_preset
-    from ..strategies.genome import (DEAD_ZONE, active_features, alpha_genome,
-                                     describe_genome)
+    from ..evolve.engine import (champion, load_ensemble, load_history,
+                                 load_individuals, load_population, study_config,
+                                 study_preset)
+    from ..strategies.genome import (DEAD_ZONE, FAMILY_BY_NAME, active_features,
+                                     alpha_genome, describe_genome, family_weights,
+                                     preset_features, preset_kind)
 
-    path = EVOLVE_DIR / f"{study}.jsonl"
-    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    if not lines:
+    config = study_config(study)
+    if not config:
         return None
-    try:
-        config = json.loads(lines[0]).get("config", {})
-    except json.JSONDecodeError:
-        config = {}
-
     preset = study_preset(study)
     genome = alpha_genome(preset)
-    population = [p for p in load_population(study) if p.get("fitness") is not None]
-    if not population:
+    kind = preset_kind(preset)
+    best = champion(study)
+    if best is None:
         return None
-    winner = max(population, key=lambda p: p["fitness"])
-    vector = np.asarray(winner["vector"], dtype=float)
+    vector = np.asarray(best["vector"], dtype=float)
     decoded = genome.decode(vector)
 
-    weights = sorted(((n[2:], float(v)) for n, v in decoded.items()
-                      if n.startswith("w_") and abs(v) >= DEAD_ZONE),
-                     key=lambda kv: -abs(kv[1]))
-    name = f"{study}-best"
+    if kind == "families":
+        fams = family_weights(genome, vector)
+        # One row per member feature, signed by its family's prior and weighted by the
+        # family, so the winner's table reads the same way for both kinds of preset.
+        weights = [(f, s * w) for name, w in fams
+                   for f, s in FAMILY_BY_NAME[name].members]
+    else:
+        fams = []
+        weights = sorted(((n[2:], float(v)) for n, v in decoded.items()
+                          if n.startswith("w_") and abs(v) >= DEAD_ZONE),
+                         key=lambda kv: -abs(kv[1]))
+
+    population = [p for p in load_population(study) if p.get("fitness") is not None]
+    individuals = load_individuals(study)
+    scored = [p for p in individuals if p.get("fitness") is not None]
+    seeds = sorted({int(p["seed"]) for p in scored if p.get("seed") is not None})
+
     df = reload_registry()
-    row = research_row(df, name, "realistic")
+    champion_name = f"{study}-best"
+    champ_row = research_row(df, champion_name, "realistic")
+    ensemble = _ensemble_record(study, load_ensemble(study), df)
+    deliverable = ensemble["name"] if ensemble else champion_name
+    deliv_row = (research_row(df, deliverable, "realistic") if ensemble else champ_row)
+    row = deliv_row if deliv_row is not None else champ_row
+    forward = forward_lookup()
     return {
         "study": study,
         "preset": preset,
+        "kind": kind,
         "config": config,
+        "objective": _objective_of(config),
         "history": load_history(study),
-        "winner_name": name,
-        "winner_fitness": maybe_float(winner.get("fitness")),
+        "seeds": seeds,
+        "n_individuals": len({tuple(p["vector"]) for p in scored}),
+        "winner_name": champion_name,
+        "winner_fitness": maybe_float(best.get("fitness")),
         "weights": weights,
-        "n_ignored": len(PRESETS_LEN(preset)) - len(weights),
+        "families": fams,
+        "n_ignored": len(preset_features(preset)) - len(weights),
         "active": active_features(genome, vector),
         "portfolio": {k: decoded[k] for k in
                       ("top_k", "weighting", "max_weight", "use_regime",
                        "defensive_gross", "vol_trigger")},
         "prose": describe_genome(genome, vector),
         "usage": _feature_usage(population, genome),
+        "family_usage": _family_usage(population, genome),
         "n_population": len(population),
         "deflation": study_deflation(study),
+        "champion_research": row_stats(champ_row) if champ_row is not None else None,
         "research": row_stats(row) if row is not None else None,
         "window": (f"{str(row['start'])[:7]} → {str(row['end'])[:7]}"
                    if row is not None else ""),
+        "deliverable": deliverable,
+        "ensemble": ensemble,
+        "forward": forward.get(champion_name),
+    }
+
+
+def _ensemble_record(study: str, record: dict | None, df) -> dict | None:
+    """What the page needs about a search's ensemble, or None when it has none."""
+    if not record:
+        return None
+    name = f"{study}-ensemble"
+    row = research_row(df, name, "realistic")
+    members = record.get("members") or []
+    fitnesses = [maybe_float(m.get("fitness")) for m in members]
+    fitnesses = [f for f in fitnesses if f is not None]
+    return {
+        "name": name,
+        "size": int(record.get("size") or len(members)),
+        "seeds": list(record.get("seeds") or []),
+        "built_at": str(record.get("built_at", "")),
+        "family_usage": dict(record.get("family_usage") or {}),
+        "feature_usage": dict(record.get("feature_usage") or {}),
+        "construction": dict(record.get("construction") or {}),
+        "prose": str(record.get("prose", "")),
+        "evaluation": dict(record.get("evaluation") or {}),
+        "member_fitness": {"best": max(fitnesses) if fitnesses else None,
+                           "worst": min(fitnesses) if fitnesses else None},
+        "champion_fitness": maybe_float((record.get("champion") or {}).get("fitness")),
+        "champion_base": maybe_float((record.get("champion") or {}).get("base")),
+        "research": row_stats(row) if row is not None else None,
+        "deflation": deflation_from(df, row) if row is not None else None,
         "forward": forward_lookup().get(name),
     }
 
 
-def PRESETS_LEN(preset: str) -> tuple[str, ...]:
-    from ..strategies.genome import PRESETS
-    return PRESETS[preset]
+def _objective_of(config: dict) -> dict:
+    """The objective a recorded search maximised, with the pre-2026-09 defaults filled
+    in for checkpoints that predate a setting."""
+    return {
+        "metric": config.get("metric", "sharpe_monthly"),
+        "costs": config.get("costs", "realistic"),
+        "fold_scheme": config.get("fold_scheme", "contiguous"),
+        "n_folds": config.get("n_folds"),
+        "fold_min_years": config.get("fold_min_years"),
+        "fold_max_years": config.get("fold_max_years"),
+        "aggregate": config.get("aggregate", "mean_minus_std"),
+        "quantile": config.get("quantile"),
+        "dispersion_weight": config.get("dispersion_weight"),
+        "turnover_penalty": config.get("turnover_penalty", 0.0),
+        "complexity_penalty": config.get("complexity_penalty", 0.0),
+        "family_penalty": config.get("family_penalty", 0.0),
+        "gate_penalty": config.get("gate_penalty", 0.0),
+        "n_seeds": config.get("n_seeds", 1),
+        "ensemble_size": config.get("ensemble_size", 0),
+    }
 
 
 def _feature_usage(population: list[dict], genome) -> dict[str, int]:
@@ -875,15 +1096,29 @@ def _feature_usage(population: list[dict], genome) -> dict[str, int]:
     return counts
 
 
+def _family_usage(population: list[dict], genome) -> dict[str, int]:
+    """The same, per family. Empty for a feature preset."""
+    import numpy as np
+
+    from ..strategies.genome import active_families
+
+    counts: dict[str, int] = {}
+    for individual in population:
+        for fam in active_families(genome, np.asarray(individual["vector"], dtype=float)):
+            counts[fam] = counts.get(fam, 0) + 1
+    return counts
+
+
 def genome_anatomy() -> dict:
     """The search space itself: the portfolio genes, the constants, the defaults.
 
     Read off `alpha_genome` and `EvolutionConfig` rather than restated, so the
     methodology page cannot drift from the code it describes.
     """
-    from ..evolve.engine import EvolutionConfig
+    from ..evolve.config import EvolutionConfig
     from ..evolve.operators import BLX_ALPHA
-    from ..strategies.genome import DEAD_ZONE, PRESETS, WEIGHTINGS, alpha_genome
+    from ..strategies.genome import (DEAD_ZONE, FAMILY_PRESETS, WEIGHTINGS, all_presets,
+                                     alpha_genome, preset_families, preset_kind)
 
     genome = alpha_genome("price")
     shape = [g for g in genome.genes if not g.name.startswith("w_")]
@@ -895,5 +1130,8 @@ def genome_anatomy() -> dict:
         "shape_genes": [{"name": g.name, "low": g.low, "high": g.high,
                          "integer": g.integer, "choices": g.choices, "note": g.note}
                         for g in shape],
-        "sizes": {name: len(alpha_genome(name)) for name in PRESETS},
+        "sizes": {name: len(alpha_genome(name)) for name in all_presets()},
+        "kinds": {name: preset_kind(name) for name in all_presets()},
+        "n_families": {name: len(preset_families(name)) for name in all_presets()},
+        "caps": {name: fp.max_active for name, fp in FAMILY_PRESETS.items()},
     }

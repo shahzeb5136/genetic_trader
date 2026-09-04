@@ -2,15 +2,18 @@
 
     python -m sp500lab report backtest --open     -> reports/backtest/
     python -m sp500lab report forward  --open     -> reports/forward/
+    python -m sp500lab report timing   --open     -> reports/timing/
     python -m sp500lab report genetic  --open     -> reports/genetic_algorithm/
 
-Two sets, and each is one folder holding exactly two kinds of file: `index.html`, every
-algorithm's headline statistics on one scoreboard, and one self-contained page per
-algorithm - no server, no CDN, no build step. Open a page offline, keep it next to the
-commit that produced it, send it to someone. `reports/genetic_algorithm/` is a third,
-smaller set: three pages on the search itself, no index (ADR-046). Everything else
-(`report features`, `report registry`, `report algorithms`, ...) is on demand and lands
-in `reports/extra/` (ADR-045).
+One folder per lab (ADR-047). The two monthly sets each hold exactly two kinds of file:
+`index.html`, every algorithm's headline statistics on one scoreboard, and one
+self-contained page per algorithm - no server, no CDN, no build step. Open a page
+offline, keep it next to the commit that produced it, send it to someone.
+`reports/timing/` is the calendar lab: an index and one page per calendar rule, each
+carrying BOTH windows, because that family is nine rules and a rule's research-to-forward
+arc is one story (ADR-047). `reports/genetic_algorithm/` is three pages on the search
+itself, no index (ADR-046). Everything else (`report features`, `report registry`,
+`report algorithms`, ...) is on demand and lands in `reports/extra/` (ADR-045).
 
 Layout, in dependency order
 ---------------------------
@@ -29,6 +32,10 @@ Layout, in dependency order
     genetic_views.py
                 the same, for the genetic algorithm: the search space, the objective,
                 the operators, and every search with its winner decoded.
+    timing_views.py
+                the same, for the calendar lab: the leg decomposition, the rules costed
+                three ways, and one page per rule. Its forward half is built by
+                `forward_views.outcome_sections()` rather than a second time here.
     render/     Report -> SVG and HTML (and Markdown). The only files that compute
                 pixels or emit tags.
     cli.py      `sp500lab report ...`
@@ -54,6 +61,7 @@ from .genetic_views import methodology_report, searches_report
 from .render.html import render as render_html
 from .render.html import write as write_html
 from .specs import Report, Section
+from .timing_views import timing_report, timing_rule_report
 from .views import (
                             comparison_report,
                             feature_report,
@@ -72,5 +80,6 @@ __all__ = [
     "forward_index_report", "forward_strategy_report", "forward_decay_report",
     "forward_honesty_report",
     "methodology_report", "genetic_features_report", "searches_report",
+    "timing_report", "timing_rule_report",
     "render_html", "write_html",
 ]
